@@ -1,0 +1,23 @@
+
+# $Id$
+# Copyright (c) 2000-2019 HVR Software bv
+# Note: Put new changes at the TOP of this file.
+# Note: For tilde-line format, see specification in jp/perl/changelog_merge.pl
+
+2019-09-23 (Robin)
+    ~ [HVR-9033] Support Event Hub as a target
+    * hvreventhubagent.py: ADDED, initial commit
+
+2021-02-04 (Robin)
+    Support both python 2 and python 3
+    Support azure-eventhub Python library 5.0.0 and above
+
+2021-02-08 (Simon)
+    Added logic to collapse the before and after rows into one JSON update row 
+
+2021-02-09 (Robin)
+    Fixed script to run without collapse logic by default
+    Added a size check to the collapsed data
+
+2021-04-05 (Robin)
+    Import json to support the HVR_LONG_ENVIRONMENT logic
