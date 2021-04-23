@@ -127,6 +127,7 @@
 #                                  Integrate /RenameExpression includes {hvr_tx_seq}
 #     04/16/2021 RLR:  Fixed bug reading data file with UTF encoding
 #     04/16/2021 RLR:  Remove all files in a batch after the batch is sent
+#     04/23/2021 RLR:  Support hvr_integ_seq for the partition id assignment
 #
 ################################################################################
 
@@ -504,7 +505,7 @@ def validate_options():
         if not options.file_pattern:
             options.file_pattern = parse_expression(options.file_expression)
         if not have_partition_id():
-            raise Exception("The Integrate rename expression must include {hvr_tx_seq} to support partition assignment")
+            raise Exception("The Integrate rename expression must include {hvr_tx_seq} or {hvr_integ_seq} to support partition assignment")
         
     if not options.ehub_name and not options.ehub_name_pattern:
         usage("The Event Hub name is not defined - define using [-e name] or HVR_EVENTHUB_NAME")
@@ -531,6 +532,8 @@ def have_ehub_name_elements():
 def have_partition_id():
     for part in options.file_pattern:
         if part == '{hvr_tx_seq}':
+            return True
+        if part == '{hvr_integ_seq}':
             return True
     return False
 
@@ -760,17 +763,22 @@ def split_files_for_partitions(filelist):
     for fname in filelist:
         pid = 0
         file_values = parse_filename(fname)
+        txseq = ''
         if '{hvr_tx_seq}' in file_values:
             txseq = file_values['{hvr_tx_seq}']
             if len(txseq) == 24:
                 txseq = txseq[4:-4]
-            try:
-                pid = int(txseq, 16)
-            except:
-                pid = 0
-            if pid:
-                pid = pid % num_partitions
-            trace(2, "Send {} to partition {} based on {}/{}", fname, pid, txseq, int(txseq, 16))
+        if '{hvr_integ_seq}' in file_values:
+            txseq = file_values['{hvr_integ_seq}']
+            if len(txseq) == 36:
+                txseq = txseq[4:-16]
+        try:
+            pid = int(txseq, 16)
+        except:
+            pid = 0
+        if pid:
+            pid = pid % num_partitions
+        trace(2, "Send {} to partition {} based on {}/{}", fname, pid, txseq, int(txseq, 16))
         split_list[pid].append(fname)
     for i in range(0,num_partitions):
         trace(2, "  partition {}: {} files".format(i, len(split_list[i])))
