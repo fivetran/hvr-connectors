@@ -128,6 +128,7 @@
 #     04/16/2021 RLR:  Fixed bug reading data file with UTF encoding
 #     04/16/2021 RLR:  Remove all files in a batch after the batch is sent
 #     04/23/2021 RLR:  Support hvr_integ_seq for the partition id assignment
+#     04/26/2021 RLR:  Add batch logging
 #
 ################################################################################
 
@@ -173,6 +174,8 @@ class Options:
     fail_if_file_not_exist = True
     fail_if_file_too_large = True
     trace = 0
+    jnl_batches = ''
+    jnl_fd = None
 
 file_counter   = 0
 byte_total     = 0
@@ -299,6 +302,10 @@ def load_environment():
         options.name_format = evars['HVR_EVENTHUB_NAME_FORMAT']
     if 'HVR_EVENTHUB_TRACE' in evars:
         options.trace = int(evars['HVR_EVENTHUB_TRACE'])
+    if 'HVR_EVENTHUB_JOURNAL_BATCHES' in evars:
+        options.jnl_batches = evars['HVR_EVENTHUB_JOURNAL_BATCHES']
+        if not os.path.exists(options.jnl_batches):
+            raise("Path given for 'HVR_EVENTHUB_JOURNAL_BATCHES', {}, does not exist".format(options.jnl_batches))
     if 'HVR_FILE_LOC' in evars:
         options.file_path = evars['HVR_FILE_LOC']
     if 'HVR_LOC_STATEDIR' in evars:
@@ -366,6 +373,7 @@ def print_options():
     trace(2, "Column name containing {{hvr_op}} = {}", options.op_type_col)
     trace(2, "Before column prefix = {}", options.before_prefix)
     trace(2, "debug_mode = {}", options.debug_mode)
+    trace(2, "Journal batches sent = {}", options.jnl_batches)
     trace(1, "trace = {}", options.trace)
     trace(1, "============================================")
 
@@ -732,15 +740,31 @@ def remove_uploaded_files(files):
         if os.path.exists(full_name):
             os.remove(full_name)
 
-def process_for_debug(files):
-    global bytes_in_files
-
-    if not options.debug_mode:
+def journal_batch(producer, partition_id, message=None):
+    if not options.jnl_batches:
         return
-    for fname in files:
-        full_name = options.file_path + '/' + fname
-        file_as_string = contents_of_integ_file(full_name)
-        bytes_in_files += len(file_as_string)
+    if message and not options.jnl_fd:
+        from time import gmtime, strftime
+        tstamp = strftime("%Y%m%d_%H%M%S", gmtime())
+        pid = -1
+        seq = 999
+        if partition_id:
+            pid = partition_id
+            partprops = producer.get_partition_properties(partition_id)
+            seq = partprops['last_enqueued_sequence_number']
+        jnlname = "{}_{}_{}_p{}_s{}".format(options.channel, options.location, tstamp, pid, seq)
+        jnlpath = os.path.join(options.jnl_batches, jnlname)
+        try:
+            options.jnl_fd = open(jnlpath, "w")
+        except Exception as ex:
+            print("Cannot create journal file {}:{}".format(jnlpath, ex))
+            return
+    if not message and options.jnl_fd:
+        options.jnl_fd.close()
+        options.jnl_fd = None
+        return
+    options.jnl_fd.write(message)
+    options.jnl_fd.write('\n')
 
 def add_data_to_batch(event_data_batch, data):
     try:
@@ -798,6 +822,7 @@ def send_batch(producer, files, start, asked_partitionid = None):
         file_as_string = contents_of_integ_file(full_name)
         if add_data_to_batch(event_data_batch, file_as_string):
             bytes_in_files += len(file_as_string)
+            journal_batch(producer, asked_partitionid, file_as_string)
         else:
             trace(2, "Cannot add last file; batch full {}".format(event_data_batch.size_in_bytes))
             newstart = i
@@ -815,6 +840,7 @@ def send_batch(producer, files, start, asked_partitionid = None):
         print("Error uploading ")
         raise eh_err
     byte_total += event_data_batch.size_in_bytes
+    journal_batch(producer, asked_partitionid, None)
     return newstart   
 
 def upload_set_of_files(producer, files, partition_id=None):
