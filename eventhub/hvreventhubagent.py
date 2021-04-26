@@ -129,6 +129,10 @@
 #     04/16/2021 RLR:  Remove all files in a batch after the batch is sent
 #     04/23/2021 RLR:  Support hvr_integ_seq for the partition id assignment
 #     04/26/2021 RLR:  Add batch logging
+#                          Configure:  HVR_EVENTHUB_JOURNAL_BATCHES=<path to store journal files>
+#                          Filename is <channel>_<loc>_<date>_<time>_<partitionid>_<seq>
+#                      Modify collapse logic to ignore changes to specified columns
+#                          Configure:  HVR_EVENTHUB_IGNORE_COLS=<comma separated list of column names>
 #
 ################################################################################
 
@@ -169,6 +173,7 @@ class Options:
     collapse_befores = ''
     op_type_col = ''
     before_prefix = '&Old'
+    ignore_columns = []
     debug_mode = False
     remove_each_file_as_done = True
     fail_if_file_not_exist = True
@@ -306,6 +311,8 @@ def load_environment():
         options.jnl_batches = evars['HVR_EVENTHUB_JOURNAL_BATCHES']
         if not os.path.exists(options.jnl_batches):
             raise("Path given for 'HVR_EVENTHUB_JOURNAL_BATCHES', {}, does not exist".format(options.jnl_batches))
+    if 'HVR_EVENTHUB_IGNORE_COLS' in evars:
+        options.ignore_columns = evars['HVR_EVENTHUB_IGNORE_COLS'].split(',')
     if 'HVR_FILE_LOC' in evars:
         options.file_path = evars['HVR_FILE_LOC']
     if 'HVR_LOC_STATEDIR' in evars:
@@ -371,6 +378,7 @@ def print_options():
     trace(2, "State directory = {}", options.state_dir)
     trace(2, "Collapse before and after images into one after = {}", options.collapse_befores)
     trace(2, "Column name containing {{hvr_op}} = {}", options.op_type_col)
+    trace(2, "Ignore changes to {}", options.ignore_columns)
     trace(2, "Before column prefix = {}", options.before_prefix)
     trace(2, "debug_mode = {}", options.debug_mode)
     trace(2, "Journal batches sent = {}", options.jnl_batches)
@@ -630,7 +638,7 @@ def condense_before_after(array_data, op_type_col, before_prefix, mode):
                     # Process the after image
                     expecting_after = False
                     for key, before_value in before_row.items():
-                        if key == op_type_col:
+                        if key == op_type_col or key in options.ignore_columns:
                             continue
                         if mode == 'a':
                             row[before_prefix + key] = before_value
