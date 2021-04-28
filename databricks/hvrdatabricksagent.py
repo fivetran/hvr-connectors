@@ -120,6 +120,7 @@
 #     03/26/2021 RLR: Add support for multi-delete operation
 #     04/12/2021 RLR: Fixed a case sensitive bug in comparing columns for types
 #     04/14/2021 RLR: Added logic to create the target table on refresh
+#     04/28/2021 RLR: Fixed a bug in files_in_s3
 #
 ################################################################################
 import sys
@@ -1092,7 +1093,7 @@ def files_in_s3(folder, file_list):
         try:
             contents = resp['Contents']
         except KeyError:
-            return
+            return 0
 
         for obj in contents:
             key = obj['Key']
