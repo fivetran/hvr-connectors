@@ -133,6 +133,7 @@
 #                          Filename is <channel>_<loc>_<date>_<time>_<partitionid>_<seq>
 #                      Modify collapse logic to ignore changes to specified columns
 #                          Configure:  HVR_EVENTHUB_IGNORE_COLS=<comma separated list of column names>
+#     04/28/2021 RLR:  Fixed the logic raising an exception if HVR_EVENTHUB_JOURNAL_BATCHES is invalid
 #
 ################################################################################
 
@@ -144,6 +145,7 @@ import re
 import logging
 import traceback
 import json
+import platform
 from timeit import default_timer as timer
 from azure.eventhub import EventHubProducerClient, EventData
 from azure.eventhub.exceptions import EventHubError
@@ -310,7 +312,8 @@ def load_environment():
     if 'HVR_EVENTHUB_JOURNAL_BATCHES' in evars:
         options.jnl_batches = evars['HVR_EVENTHUB_JOURNAL_BATCHES']
         if not os.path.exists(options.jnl_batches):
-            raise("Path given for 'HVR_EVENTHUB_JOURNAL_BATCHES', {}, does not exist".format(options.jnl_batches))
+            pi = platform.uname()
+            raise Exception("Path given for 'HVR_EVENTHUB_JOURNAL_BATCHES', {}, does not exist on {}".format(options.jnl_batches, pi.node))
     if 'HVR_EVENTHUB_IGNORE_COLS' in evars:
         options.ignore_columns = evars['HVR_EVENTHUB_IGNORE_COLS'].split(',')
     if 'HVR_FILE_LOC' in evars:
