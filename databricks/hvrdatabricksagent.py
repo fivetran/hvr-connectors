@@ -92,7 +92,7 @@
 #           <tablename>:<column list>;<tablename>:<column list>; . . 
 #        For example:
 #           TAB1:COL77;TAB2:COL33
-
+#
 #     HVR_DBRK_TRACE             (optional)
 #        Enables tracing of the AgentPlugin
 #           1 - logs each step being performed
@@ -121,6 +121,9 @@
 #     04/12/2021 RLR: Fixed a case sensitive bug in comparing columns for types
 #     04/14/2021 RLR: Added logic to create the target table on refresh
 #     04/28/2021 RLR: Fixed a bug in files_in_s3
+#     04/28/2021 RLR: Fixed the mapping of decimal type data types in create table
+#                     Fixed the casting of decimal type data types
+#                     Fixed tracing in get_s3_handles
 #
 ################################################################################
 import sys
@@ -716,6 +719,18 @@ def remove_identity(ctype):
             return ctype[:len(ctype)-9]
     return ctype
 
+def get_decimal_type(dtype, precision, scale):
+    p = s = 0
+    if precision:
+        p = int(precision)
+    if scale:
+        s = int(scale)
+    if p > 38 or s > 37:
+        return 'DOUBLE'
+    if s <= 0:
+        return 'DECIMAL({})'.format(precision)
+    return 'DECIMAL({},{})'.format(precision,scale)
+
 def databricks_datatype(col):
     name = col[1]
     ctype = col[3]
@@ -749,9 +764,15 @@ def databricks_datatype(col):
     if ctype in BLOB_TYPES:
         return 'BINARY'
     if ctype == 'number' and col[4] == '0':
-        return 'DECIMAL'
-    if ctype in DEC_TYPES: 
-        return 'DECIMAL'
+        return 'DOUBLE'
+    if ctype == 'money (ingres)':
+        return 'DECIMAL(14,2)'
+    if ctype == 'money':
+        return 'DECIMAL(19,4)'
+    if ctype == 'smallmoney':
+        return 'DECIMAL(10,4)'
+    if ctype in DEC_TYPES:
+        return get_decimal_type(ctype, bp, cs)
     if ctype in TIME_TYPES:
         return 'STRING'
     if ctype in DATE_TYPES:
@@ -1052,10 +1073,10 @@ def get_s3_handles():
             Connections.s3_resource = boto3.resource('s3')
         else:
             if options.region:
-                trace(4, "Get S3 handle: boto3.resource('s3', {0}, {1}, {2})",aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key, region_name=options.region)
+                trace(4, "Get S3 handle: boto3.resource('s3', {0}, {1}, {2})", options.access_id, options.secret_key, options.region)
                 Connections.s3_resource = boto3.resource('s3', aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key, region_name=options.region)
             else:
-                trace(4, "Get S3 handle: boto3.resource('s3', {0}, {1})",aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key)
+                trace(4, "Get S3 handle: boto3.resource('s3', {0}, {1})", options.access_id, options.secret_key)
                 Connections.s3_resource = boto3.resource('s3', aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key)
     except Exception as ex:
         print("Failed creating resource service client for s3")
@@ -1067,10 +1088,10 @@ def get_s3_handles():
             Connections.s3_client = boto3.client('s3')
         else:
             if options.region:
-                trace(4, "Get S3 handle: boto3.client('s3', {0}, {1}, {2})",aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key, region_name=options.region)
+                trace(4, "Get S3 handle: boto3.client('s3', {0}, {1}, {2})", options.access_id, options.secret_key, options.region)
                 Connections.s3_client = boto3.client('s3', aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key, region_name=options.region)
             else:
-                trace(4, "Get S3 handle: boto3.client('s3', {0}, {1})",aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key)
+                trace(4, "Get S3 handle: boto3.client('s3', {0}, {1})", options.access_id, options.secret_key)
                 Connections.s3_client = boto3.client('s3', aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key)
     except Exception as ex:
         print("Failed creating service client for s3")
@@ -1406,8 +1427,9 @@ def copy_into_delta_table(load_table, target_table, columns, file_list):
         if col in col_types:
             type_func = col_types[col]
             if '(' in type_func:
-                type_func = type_func[:type_func.find('(')]
-            copy_sql += "{0}({1}),".format(type_func, col)
+                copy_sql += "CAST({0} as {1}),".format(col, type_func)
+            else:
+                copy_sql += "{0}({1}),".format(type_func, col)
         else:
             copy_sql += "{0},".format(col)
     copy_sql = copy_sql[:-1]
