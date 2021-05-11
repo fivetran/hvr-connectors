@@ -70,6 +70,9 @@
 #     HVR_DBRK_TIMEKEY           (optional)
 #        If set to 'ON', changes are appended to target
 #
+#     HVR_DBRK_EXTERNAL_LOC      (optional)
+#        If specified, and refresh with create table, create an external Delta table.
+#
 #     HVR_DBRK_DELIMITER         (optional)
 #        The value of /FieldSeparator from the FileFormat action, if set
 #
@@ -124,6 +127,7 @@
 #     04/28/2021 RLR: Fixed the mapping of decimal type data types in create table
 #                     Fixed the casting of decimal type data types
 #                     Fixed tracing in get_s3_handles
+#     05/11/2021 RLR: Added ability to create a table with a LOCATION
 #
 ################################################################################
 import sys
@@ -163,6 +167,7 @@ class Options:
     secret_key = ''
     region = ''
     delimiter = ','
+    external_loc = ''
     multidelete_map = {}
     optype = 'op_type'
     no_optype_on_target = True
@@ -245,6 +250,7 @@ def env_load():
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
     options.dsn = os.getenv('HVR_DBRK_DSN', '')
+    options.external_loc = os.getenv('HVR_DBRK_EXTERNAL_LOC', '')
     options.connect_string = os.getenv('HVR_DBRK_CONNECT_STRING', '')
     if os.getenv('HVR_DBRK_TIMEKEY', '').upper() == 'ON':
         options.target_is_timekey = True
@@ -795,14 +801,23 @@ def databricks_datatype(col):
         return 'BINARY'
     raise Exception("Mapping unknown for '{}'".format(ctype))
 
+def get_external_loc(table):
+    if options.external_loc.find('{hvr_tbl_name}') > 0:
+        return options.external_loc.replace('{hvr_tbl_name}', table)
+    return options.external_loc
+
 def target_create_table(table, columns):
-    create_sql = ''
-    create_sql += "CREATE TABLE {} (".format(table)
+    create_sql = 'CREATE '
+    if options.external_loc:
+        create_sql += 'OR REPLACE '
+    create_sql += "TABLE {} (".format(table)
     sep = ' '
     for col in columns:
         create_sql += "{} {} {}".format(sep, col[1], databricks_datatype(col))
         sep = ','
     create_sql += ") USING DELTA"
+    if options.external_loc:
+        create_sql += " LOCATION '{}'".format(get_external_loc(table))
     return create_sql
 
 def get_property(act_param, prop_name):
