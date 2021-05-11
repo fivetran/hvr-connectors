@@ -134,6 +134,7 @@
 #                      Modify collapse logic to ignore changes to specified columns
 #                          Configure:  HVR_EVENTHUB_IGNORE_COLS=<comma separated list of column names>
 #     04/28/2021 RLR:  Fixed the logic raising an exception if HVR_EVENTHUB_JOURNAL_BATCHES is invalid
+#     04/29/2021 RLR:  Added the encoding option to the open of the journal file
 #
 ################################################################################
 
@@ -766,7 +767,7 @@ def journal_batch(producer, partition_id, message=None):
         jnlname = "{}_{}_{}_p{}_s{}".format(options.channel, options.location, tstamp, pid, seq)
         jnlpath = os.path.join(options.jnl_batches, jnlname)
         try:
-            options.jnl_fd = open(jnlpath, "w")
+            options.jnl_fd = open(jnlpath, "w", encoding="utf8")
         except Exception as ex:
             print("Cannot create journal file {}:{}".format(jnlpath, ex))
             return
