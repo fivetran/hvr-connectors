@@ -76,6 +76,9 @@
 #     HVR_DBRK_DELIMITER         (optional)
 #        The value of /FieldSeparator from the FileFormat action, if set
 #
+#     HVR_DBRK_LINE_SEPARATOR    (optional)
+#        The value of /LineSeparator from the FileFormat action, if set
+#
 #     HVR_DBRK_HVRCONNECT        (required for '-r' option)
 #        The connection string for connecting to the HVR repository, in base64. 
 #        This is the same string that is to run hvrinit or hvrrefresh from the
@@ -128,6 +131,7 @@
 #                     Fixed the casting of decimal type data types
 #                     Fixed tracing in get_s3_handles
 #     05/11/2021 RLR: Added ability to create a table with a LOCATION
+#     05/11/2021 RLR: Added HVR_DBRK_LINE_SEPARATOR to define the line separator
 #
 ################################################################################
 import sys
@@ -167,6 +171,7 @@ class Options:
     secret_key = ''
     region = ''
     delimiter = ','
+    line_separator = ''
     external_loc = ''
     multidelete_map = {}
     optype = 'op_type'
@@ -246,6 +251,9 @@ def env_load():
     options.delimiter = os.getenv('HVR_DBRK_DELIMITER', ',')
     if len(options.delimiter) != 1:
         raise Exception("Invalid value {0} for {1}; must be one character".format(options.delimiter, 'HVR_DBRK_DELIMITER'))
+    options.line_separator = os.getenv('HVR_DBRK_LINE_SEPARATOR', '')
+    if len(options.line_separator) > 1:
+        raise Exception("Invalid value {0} for {1}; must be one character".format(options.line_separator, 'HVR_DBRK_LINE_SEPARATOR'))
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
@@ -288,6 +296,7 @@ def trace_input():
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
     trace(3, "Isdeleted column is {}; column exists on target = {}".format(options.isdeleted, (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey {}".format(options.target_is_timekey))
+    trace(3, "COPY INTO format options: delimiter = '{}'  line separator = '{}'".format(options.delimiter, options.line_separator))
     trace(3, "Create/recreate target table(s) during refresh is {1}".format(options.target_is_timekey, options.recreate_tables_on_refresh))
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh is {}".format(not options.truncate_target_on_refresh))
@@ -1458,7 +1467,10 @@ def copy_into_delta_table(load_table, target_table, columns, file_list):
         copy_sql += "'{0}',".format(fname)
     copy_sql = copy_sql[:-1]
     copy_sql += ") "
-    copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}') ".format(options.delimiter)
+    if options.line_separator:
+        copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}', 'lineSep' = '{}') ".format(options.delimiter, options.line_separator)
+    else:
+        copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}') ".format(options.delimiter)
     copy_sql += "COPY_OPTIONS ('force' = 'false')"
 
     trace(1, "Copying from the file store into " + load_table)
