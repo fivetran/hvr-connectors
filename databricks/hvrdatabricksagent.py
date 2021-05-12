@@ -132,6 +132,7 @@
 #                     Fixed tracing in get_s3_handles
 #     05/11/2021 RLR: Added ability to create a table with a LOCATION
 #     05/11/2021 RLR: Added HVR_DBRK_LINE_SEPARATOR to define the line separator
+#     05/12/2021 RLR: Set Auto Optimize on tables after they are created
 #
 ################################################################################
 import sys
@@ -173,6 +174,7 @@ class Options:
     delimiter = ','
     line_separator = ''
     external_loc = ''
+    auto_optimize = True
     multidelete_map = {}
     optype = 'op_type'
     no_optype_on_target = True
@@ -298,6 +300,7 @@ def trace_input():
     trace(3, "Target is timekey {}".format(options.target_is_timekey))
     trace(3, "COPY INTO format options: delimiter = '{}'  line separator = '{}'".format(options.delimiter, options.line_separator))
     trace(3, "Create/recreate target table(s) during refresh is {1}".format(options.target_is_timekey, options.recreate_tables_on_refresh))
+    trace(3, "Auto Optimize tables after creation is {}".format(options.auto_optimize))
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh is {}".format(not options.truncate_target_on_refresh))
     if options.disable_filestore_actions:
@@ -1323,6 +1326,13 @@ def create_burst_table(burst_table_name, base_name):
         alter_sql = 'ALTER TABLE {0} ADD COLUMN ({1})'.format(burst_table_name, cols)
         trace(1, "Altering table " + burst_table_name)
         execute_sql(alter_sql, 'Alter')
+    if options.auto_optimize:
+        set_auto_optimize(burst_table_name)
+
+def set_auto_optimize(table_name):
+    set_sql = "ALTER TABLE {} SET TBLPROPERTIES (delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true)".format(table_name)
+    trace(1, "Setting Auto Optimize on {}".format(table_name))
+    execute_sql(set_sql, 'Set Auto Optimize')
 
 def get_col_types(base_name, columns):
     hvr_columns = []
@@ -1367,6 +1377,8 @@ def recreate_target_table(hvr_table):
     drop_table(target_name)
     trace(1, "Creating table " + target_name)
     execute_sql(create_sql, 'Create')
+    if options.auto_optimize:
+        set_auto_optimize(target_name)
 
 #
 # Process the data
