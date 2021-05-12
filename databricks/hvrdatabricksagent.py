@@ -133,6 +133,9 @@
 #     05/11/2021 RLR: Added ability to create a table with a LOCATION
 #     05/11/2021 RLR: Added HVR_DBRK_LINE_SEPARATOR to define the line separator
 #     05/12/2021 RLR: Set Auto Optimize on tables after they are created
+#     05/12/2021 RLR: If the folder that the files are in includes the table name,
+#                     create the burst table as en external table pointing to the
+#                     folder where the files are.
 #
 ################################################################################
 import sys
@@ -167,12 +170,14 @@ class Options:
     url = ''
     resource = ''
     container = ''
+    directory = ''
     folder = ''
     access_id = ''
     secret_key = ''
     region = ''
     delimiter = ','
     line_separator = ''
+    use_staging_table = False
     external_loc = ''
     auto_optimize = True
     multidelete_map = {}
@@ -279,7 +284,7 @@ def env_load():
                 if options.container[-1:] == "/":
                     options.container = options.container[:-1]
                 if "/" in options.container:
-                    options.folder = options.container[options.container.find("/")+1:]
+                    options.directory = options.container[options.container.find("/")+1:]
                     options.container = options.container[:options.container.find("/")]
             else:
                 options.container = file_loc[8:ind]
@@ -287,14 +292,14 @@ def env_load():
                 if options.resource[-1:] == "/":
                     options.resource = options.resource[:-1]
                 if "/" in options.resource:
-                    options.folder = options.resource[options.resource.find("/")+1:]
+                    options.directory = options.resource[options.resource.find("/")+1:]
                     options.resource = options.resource[:options.resource.find("/")]
    
 def trace_input():
     """
     """
     trace(3, "============================================")
-    trace(3, "Resource: {0}; Bucket/container: {1}, Folder: {2}".format(options.resource, options.container, options.folder))
+    trace(3, "Resource: {0}; Bucket/container: {1}, Root folder: {2}".format(options.resource, options.container, options.directory))
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
     trace(3, "Isdeleted column is {}; column exists on target = {}".format(options.isdeleted, (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey {}".format(options.target_is_timekey))
@@ -1070,7 +1075,7 @@ def table_file_name_map():
                 if name[-4:] == ".csv":
                     name = name[:-4]
                 if name == item[1]:
-                    file_path = prefix_folder(f)
+                    file_path = prefix_directory(f)
                     tbl_map[item].append(file_path)
                     pop_list.append(idx)
                     num_rows[item] += int(rows[idx])
@@ -1084,9 +1089,9 @@ def table_file_name_map():
 
     return tbl_map, num_rows
 
-def prefix_folder(path):
-    if options.folder:
-        return options.folder + '/' + path
+def prefix_directory(path):
+    if options.directory:
+        return options.directory + '/' + path
     return path
 
 #
@@ -1242,25 +1247,30 @@ def get_filestore_handles():
     else:
         get_azblob_handles()
 
-def files_found_in_filestore(target_table, file_list):
+def files_found_in_filestore(table, file_list):
     if options.disable_filestore_actions:
         return True
     folder = file_list[0]
     if '/' in folder:
         loc = folder.rfind('/')
         folder = folder[:loc]
-    trace(1, "Verify files for '{0}' in '{1}', folder '{2}'".format(target_table, options.container, folder))
+    options.folder = folder
+    options.use_staging_table = (table in folder)
+    trace(1, "Verify files for '{0}' in '{1}', folder '{2}'".format(table, options.container, options.folder))
+    trace(1, "Use managed table for burst = {}".format(options.use_staging_table))
 
     if options.filestore == FileStore.AWS_BUCKET:
-        files_in_list = files_in_s3(folder, file_list)
+        files_in_list = files_in_s3(options.folder, file_list)
     else:
-        files_in_list = files_in_azblob(folder, file_list)
+        files_in_list = files_in_azblob(options.folder, file_list)
 
     if files_in_list == 0:
-        trace(1, "Skipping table {0}; no files in {1}".format(target_table, folder))
+        trace(1, "Skipping table {0}; no files in {1}".format(table, options.folder))
         return False
+    if options.use_staging_table and files_in_list != len(file_list):
+        raise Exception("Files found in {} must correspond to files listed for this table in HVR_FILE_NAMES".format(options.folder))
     if files_in_list < len(file_list):
-        raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(folders, target_table))
+        raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(options.folder, table))
     return True
 
 def delete_files_from_filestore(file_list):
@@ -1447,6 +1457,28 @@ def merge_into_target_from_burst(burst_table, target_table, columns, keylist):
     trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
+def create_staging_table(stage_table, target_table, columns, file_list):
+    hvr_columns, col_types = get_col_types(target_table, columns)
+    stage_sql = ''
+    stage_sql += "CREATE TABLE {0} ".format(stage_table)
+    stage_sql += "("
+    for col in hvr_columns:
+        if col in col_types:
+            stage_sql += "{0} {1},".format(col, col_types[col])
+        elif col == options.optype or col == options.isdeleted:
+            stage_sql += "{0} int,".format(col)
+        else:
+            stage_sql += "{0} string,".format(col)
+    stage_sql = stage_sql[:-1]
+    stage_sql += ") using csv "
+    if options.filestore == FileStore.AZURE_BLOB:
+        stage_sql += " LOCATION 'wasbs://{0}@{1}.blob.core.windows.net/{2}'".format(options.container, options.resource, options.folder)
+    else:
+        stage_sql += " LOCATION 's3://{0}') ".format(options.container)
+    stage_sql += ' OPTIONS (header "true", delimiter "{}")'.format(options.delimiter)
+    trace(1, "Create staging table {0}".format(stage_table))
+    execute_sql(stage_sql, 'Create')
+
 def copy_into_delta_table(load_table, target_table, columns, file_list):
     hvr_columns, col_types = get_col_types(target_table, columns)
     copy_sql = ''
@@ -1489,7 +1521,7 @@ def process_table(tab_entry, file_list, numrows):
     load_table = target_table
 
     # if refreshing an empty table, or table already processed, then skip this table
-    if len(file_list) == 0 or not files_found_in_filestore(target_table, file_list):
+    if len(file_list) == 0 or not files_found_in_filestore(tab_entry[1], file_list):
         return
 
     t = [0,0,0,0,0,0]
@@ -1507,7 +1539,10 @@ def process_table(tab_entry, file_list, numrows):
 
     if use_burst_logic:
         drop_table(load_table)
-        create_burst_table(load_table, target_table)
+        if options.use_staging_table:
+            create_staging_table(load_table, target_table, columns, file_list)
+        else:
+            create_burst_table(load_table, target_table)
     else:
         if options.mode == "refr_write_end":
             if options.recreate_tables_on_refresh:
@@ -1516,7 +1551,8 @@ def process_table(tab_entry, file_list, numrows):
                 truncate_table(target_table)
     t[1] = timer()
 
-    copy_into_delta_table(load_table, target_table, columns, file_list)
+    if not use_burst_logic or not options.use_staging_table:
+        copy_into_delta_table(load_table, target_table, columns, file_list)
     t[2] = timer()
 
     if use_burst_logic:
@@ -1529,11 +1565,17 @@ def process_table(tab_entry, file_list, numrows):
     delete_files_from_filestore(file_list)
     t[5] = timer()
     if use_burst_logic:
-        trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
-                 " create burst: {3:.2f}s,"
-                 " copy into burst: {4:.2f}s,"
-                 " merge into target: {5:.2f}s,"
-                 " drop burst: {6:.2f}s".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
+        if options.use_staging_table:
+            trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
+                     " create burst: {3:.2f}s,"
+                     " merge into target: {4:.2f}s,"
+                     " drop burst: {5:.2f}s".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[3]-t[2], t[4]-t[3]))
+        else:
+            trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
+                     " create burst: {3:.2f}s,"
+                     " copy into burst: {4:.2f}s,"
+                     " merge into target: {5:.2f}s,"
+                     " drop burst: {6:.2f}s".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
     else:
         if options.mode == "refr_write_end":
             truncate_clause = ''
