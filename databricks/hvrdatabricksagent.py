@@ -79,6 +79,11 @@
 #     HVR_DBRK_LINE_SEPARATOR    (optional)
 #        The value of /LineSeparator from the FileFormat action, if set
 #
+#     HVR_DBRK_MANAGED_BURST     (optional)
+#        If not set, the script will determine whether it can use a managed table for 
+#        the burst table.  If set to 'ON', use a managed table for the burst table.
+#        If set to any other value, create a delta table for the burst table.
+#
 #     HVR_DBRK_HVRCONNECT        (required for '-r' option)
 #        The connection string for connecting to the HVR repository, in base64. 
 #        This is the same string that is to run hvrinit or hvrrefresh from the
@@ -136,6 +141,7 @@
 #     05/12/2021 RLR: If the folder that the files are in includes the table name,
 #                     create the burst table as en external table pointing to the
 #                     folder where the files are.
+#     05/13/2021 RLR: Changes/fixes to using a managed table for the burst table
 #
 ################################################################################
 import sys
@@ -177,7 +183,7 @@ class Options:
     region = ''
     delimiter = ','
     line_separator = ''
-    use_staging_table = False
+    burst_table_set_of_files = None
     external_loc = ''
     auto_optimize = True
     multidelete_map = {}
@@ -261,6 +267,8 @@ def env_load():
     options.line_separator = os.getenv('HVR_DBRK_LINE_SEPARATOR', '')
     if len(options.line_separator) > 1:
         raise Exception("Invalid value {0} for {1}; must be one character".format(options.line_separator, 'HVR_DBRK_LINE_SEPARATOR'))
+    if os.getenv('HVR_DBRK_MANAGED_BURST', ''):
+        options.burst_table_set_of_files = os.getenv('HVR_DBRK_MANAGED_BURST', '').upper() == 'ON'
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
@@ -306,6 +314,14 @@ def trace_input():
     trace(3, "COPY INTO format options: delimiter = '{}'  line separator = '{}'".format(options.delimiter, options.line_separator))
     trace(3, "Create/recreate target table(s) during refresh is {1}".format(options.target_is_timekey, options.recreate_tables_on_refresh))
     trace(3, "Auto Optimize when table is created {}".format(options.auto_optimize))
+    if options.burst_table_set_of_files == None:
+        set_to = 'AUTO'
+    elif options.burst_table_set_of_files:
+        set_to = 'ON'
+    else:
+        set_to = 'OFF'
+    trace(3, "Create burst as managed table = '{}'".format(set_to))
+
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh is {}".format(not options.truncate_target_on_refresh))
     if options.disable_filestore_actions:
@@ -1137,6 +1153,7 @@ def files_in_s3(folder, file_list):
     trace(2, "Look for files in S3 {0}/{1}".format(options.container, folder))
 
     files_in_list = 0
+    files_not_in_list = 0
     objs = []
     while True:
 
@@ -1167,8 +1184,10 @@ def files_in_s3(folder, file_list):
         for obj in objs:
             if obj['Key'] in file_list:
                 files_in_list += 1
+            else:
+                files_not_in_list += 1
 
-    return files_in_list
+    return files_in_list,files_not_in_list
 
 def delete_files_from_s3(file_list):
     if options.filestore != FileStore.AWS_BUCKET:
@@ -1198,6 +1217,7 @@ def get_azblob_handles():
 
 def files_in_azblob(folder, file_list):
     files_in_list = 0
+    files_not_in_list = 0
     client = None
     trace(4, "Get container client: Connections.azblob_service.get_container_client({})".format(options.container))
     try:
@@ -1217,8 +1237,10 @@ def files_in_azblob(folder, file_list):
         trace(3, "  {}".format(blob.name))
         if blob.name in file_list:
             files_in_list += 1
+        elif blob.name != folder:
+            files_not_in_list += 1
 
-    return files_in_list
+    return files_in_list,files_not_in_list
 
 def delete_files_from_azblob(file_list):
     client = None
@@ -1255,22 +1277,34 @@ def files_found_in_filestore(table, file_list):
         loc = folder.rfind('/')
         folder = folder[:loc]
     options.folder = folder
-    options.use_staging_table = (table in folder)
     trace(1, "Verify files for '{0}' in '{1}', folder '{2}'".format(table, options.container, options.folder))
-    trace(1, "Use managed table for burst = {}".format(options.use_staging_table))
 
     if options.filestore == FileStore.AWS_BUCKET:
-        files_in_list = files_in_s3(options.folder, file_list)
+        files_in_list,files_not_in_list = files_in_s3(options.folder, file_list)
     else:
-        files_in_list = files_in_azblob(options.folder, file_list)
+        files_in_list,files_not_in_list = files_in_azblob(options.folder, file_list)
 
+    trace(3, "File check: files_in_list = {}; files_not_in_list = {}".format(files_in_list,files_not_in_list))
     if files_in_list == 0:
         trace(1, "Skipping table {0}; no files in {1}".format(table, options.folder))
         return False
-    if options.use_staging_table and files_in_list != len(file_list):
-        raise Exception("Files found in {} must correspond to files listed for this table in HVR_FILE_NAMES".format(options.folder))
     if files_in_list < len(file_list):
         raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(options.folder, table))
+
+    # validate and/or set managed burst table logic
+    if options.burst_table_set_of_files and files_not_in_list:
+        print("Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
+        options.burst_table_set_of_files = False
+    if options.burst_table_set_of_files == None:
+        options.burst_table_set_of_files = False
+        # if table name is in the folder name, then assume that RenameExpression separates files into separate folders by tablename
+        trace(3, "Table name '{}' in folder '{}' = {}".format(table, options.folder, table in options.folder))
+        if table in options.folder:
+            if files_not_in_list == 0:
+                options.burst_table_set_of_files = True
+            else:
+                trace(1, "Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
+    trace(1, "Use performant managed table for burst = {}".format(options.burst_table_set_of_files))
     return True
 
 def delete_files_from_filestore(file_list):
@@ -1292,7 +1326,7 @@ def get_databricks_handles():
         connect_string = "DSN={}".format(options.dsn)
     connect_string += ";UserAgentEntry=HVR"
     try:
-        Connections.odbc = pyodbc.connect(connect_string, autocommit=True)
+        Connections.odbc = pyodbc.connect(connect_string, autocommit=True, timeout=600)
         Connections.cursor = Connections.odbc.cursor()
     except pyodbc.Error as ex:
         print("Failed to connect using connect string '{}'".format(connect_string))
@@ -1457,7 +1491,7 @@ def merge_into_target_from_burst(burst_table, target_table, columns, keylist):
     trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
-def create_staging_table(stage_table, target_table, columns, file_list):
+def define_burst_table(stage_table, target_table, columns, file_list):
     hvr_columns, col_types = get_col_types(target_table, columns)
     stage_sql = ''
     stage_sql += "CREATE TABLE {0} ".format(stage_table)
@@ -1474,9 +1508,9 @@ def create_staging_table(stage_table, target_table, columns, file_list):
     if options.filestore == FileStore.AZURE_BLOB:
         stage_sql += " LOCATION 'wasbs://{0}@{1}.blob.core.windows.net/{2}'".format(options.container, options.resource, options.folder)
     else:
-        stage_sql += " LOCATION 's3://{0}') ".format(options.container)
+        stage_sql += " LOCATION 's3://{0}/{1}') ".format(options.container, options.folder)
     stage_sql += ' OPTIONS (header "true", delimiter "{}")'.format(options.delimiter)
-    trace(1, "Create staging table {0}".format(stage_table))
+    trace(1, "Creating managed burst table {0}".format(stage_table))
     execute_sql(stage_sql, 'Create')
 
 def copy_into_delta_table(load_table, target_table, columns, file_list):
@@ -1539,8 +1573,8 @@ def process_table(tab_entry, file_list, numrows):
 
     if use_burst_logic:
         drop_table(load_table)
-        if options.use_staging_table:
-            create_staging_table(load_table, target_table, columns, file_list)
+        if options.burst_table_set_of_files:
+            define_burst_table(load_table, target_table, columns, file_list)
         else:
             create_burst_table(load_table, target_table)
     else:
@@ -1551,7 +1585,7 @@ def process_table(tab_entry, file_list, numrows):
                 truncate_table(target_table)
     t[1] = timer()
 
-    if not use_burst_logic or not options.use_staging_table:
+    if not use_burst_logic or not options.burst_table_set_of_files:
         copy_into_delta_table(load_table, target_table, columns, file_list)
     t[2] = timer()
 
@@ -1565,7 +1599,7 @@ def process_table(tab_entry, file_list, numrows):
     delete_files_from_filestore(file_list)
     t[5] = timer()
     if use_burst_logic:
-        if options.use_staging_table:
+        if options.burst_table_set_of_files:
             trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
                      " create burst: {3:.2f}s,"
                      " merge into target: {4:.2f}s,"
