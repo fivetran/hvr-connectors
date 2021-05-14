@@ -84,6 +84,7 @@
 #                         ColumnProperties /Name=is_deleted /Extra /SoftDelete /Datatype=integer
 #                     Support for Replicate copy, TimeKey, SoftDelete
 #     04/12/2021 RLR: Added option to check the column data against the target columns
+#     05/14/2021 RLR: Fixed the trace line in the column data check
 #
 ################################################################################
 import sys
@@ -502,9 +503,8 @@ def check_data_in_file(columns, table_columns_and_types, file_list):
             for row in rows:
                 for colnm, colval in zip(columns, row):
                     col_type = get_col_type(colnm, table_columns_and_types)
-                    trace(4, "{} {} {}".format(colnm, colval, col_type))
                     if 'CHAR' in col_type[1] and len(colval) > col_type[2]:
-                        print("Column {} has length {}, value {}, in row {}".format(colnm, col_type[1], colval, row))
+                        print("Column {}, type {} has length {} (> {}), value {}, in row {}".format(colnm, col_type[1], len(colval), col_type[2], colval, row))
                     if not showdate and col_type[1] == 'DATE' and len(colval) > 10:
                         showdate += 1
                         print("Date column {} has value {} in row {}".format(colnm, colval, row))
