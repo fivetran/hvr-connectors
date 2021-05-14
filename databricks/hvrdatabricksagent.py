@@ -142,6 +142,7 @@
 #                     create the burst table as en external table pointing to the
 #                     folder where the files are.
 #     05/13/2021 RLR: Changes/fixes to using a managed table for the burst table
+#     05/14/2021 RLR: Fixed tracing in get_s3_handles
 #
 ################################################################################
 import sys
@@ -1123,10 +1124,10 @@ def get_s3_handles():
             Connections.s3_resource = boto3.resource('s3')
         else:
             if options.region:
-                trace(4, "Get S3 handle: boto3.resource('s3', {0}, {1}, {2})", options.access_id, options.secret_key, options.region)
+                trace(4, "Get S3 handle: boto3.resource('s3', {0}, {1}, {2})".format(options.access_id, options.secret_key, options.region))
                 Connections.s3_resource = boto3.resource('s3', aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key, region_name=options.region)
             else:
-                trace(4, "Get S3 handle: boto3.resource('s3', {0}, {1})", options.access_id, options.secret_key)
+                trace(4, "Get S3 handle: boto3.resource('s3', {0}, {1})".format(options.access_id, options.secret_key))
                 Connections.s3_resource = boto3.resource('s3', aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key)
     except Exception as ex:
         print("Failed creating resource service client for s3")
@@ -1138,10 +1139,10 @@ def get_s3_handles():
             Connections.s3_client = boto3.client('s3')
         else:
             if options.region:
-                trace(4, "Get S3 handle: boto3.client('s3', {0}, {1}, {2})", options.access_id, options.secret_key, options.region)
+                trace(4, "Get S3 handle: boto3.client('s3', {0}, {1}, {2})".format(options.access_id, options.secret_key, options.region))
                 Connections.s3_client = boto3.client('s3', aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key, region_name=options.region)
             else:
-                trace(4, "Get S3 handle: boto3.client('s3', {0}, {1})", options.access_id, options.secret_key)
+                trace(4, "Get S3 handle: boto3.client('s3', {0}, {1})".format(options.access_id, options.secret_key))
                 Connections.s3_client = boto3.client('s3', aws_access_key_id=options.access_id, aws_secret_access_key=options.secret_key)
     except Exception as ex:
         print("Failed creating service client for s3")
