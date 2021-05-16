@@ -85,6 +85,7 @@
 #                     Support for Replicate copy, TimeKey, SoftDelete
 #     04/12/2021 RLR: Added option to check the column data against the target columns
 #     05/14/2021 RLR: Fixed the trace line in the column data check
+#     05/16/2021 RLR: Skip the header line in the column data check
 #
 ################################################################################
 import sys
@@ -499,15 +500,17 @@ def check_data_in_file(columns, table_columns_and_types, file_list):
         with open(fname) as csvfile:
             trace(2,"Check data in {}".format(fname))
             rows = csv.reader(csvfile, delimiter=options.delimiter)
+            next(rows)   # skip the header
             showdate = 0
             for row in rows:
                 for colnm, colval in zip(columns, row):
                     col_type = get_col_type(colnm, table_columns_and_types)
-                    if 'CHAR' in col_type[1] and len(colval) > col_type[2]:
-                        print("Column {}, type {} has length {} (> {}), value {}, in row {}".format(colnm, col_type[1], len(colval), col_type[2], colval, row))
-                    if not showdate and col_type[1] == 'DATE' and len(colval) > 10:
-                        showdate += 1
-                        print("Date column {} has value {} in row {}".format(colnm, colval, row))
+                    if col_type:
+                        if 'CHAR' in col_type[1] and len(colval) > col_type[2]:
+                            print("Column {}, type {} has length {} (> {}), value {}, in row {}".format(colnm, col_type[1], len(colval), col_type[2], colval, row))
+                        if not showdate and col_type[1] == 'DATE' and len(colval) > 10:
+                            showdate += 1
+                            print("Date column {} has value {} in row {}".format(colnm, colval, row))
 
 def process_table_columns(base_name, columns):
     table_columns_and_types = get_table_columns(base_name)
