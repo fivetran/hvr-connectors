@@ -143,6 +143,7 @@
 #                     folder where the files are.
 #     05/13/2021 RLR: Changes/fixes to using a managed table for the burst table
 #     05/14/2021 RLR: Fixed tracing in get_s3_handles
+#     05/17/2021 RLR: Tested, and fixed issues with, managed table logic with AWS hosted databricks
 #
 ################################################################################
 import sys
@@ -1277,6 +1278,8 @@ def files_found_in_filestore(table, file_list):
     if '/' in folder:
         loc = folder.rfind('/')
         folder = folder[:loc]
+    else:
+        folder = ''
     options.folder = folder
     trace(1, "Verify files for '{0}' in '{1}', folder '{2}'".format(table, options.container, options.folder))
 
@@ -1509,7 +1512,7 @@ def define_burst_table(stage_table, target_table, columns, file_list):
     if options.filestore == FileStore.AZURE_BLOB:
         stage_sql += " LOCATION 'wasbs://{0}@{1}.blob.core.windows.net/{2}'".format(options.container, options.resource, options.folder)
     else:
-        stage_sql += " LOCATION 's3://{0}/{1}') ".format(options.container, options.folder)
+        stage_sql += " LOCATION 's3://{0}/{1}' ".format(options.container, options.folder)
     stage_sql += ' OPTIONS (header "true", delimiter "{}")'.format(options.delimiter)
     trace(1, "Creating managed burst table {0}".format(stage_table))
     execute_sql(stage_sql, 'Create')
