@@ -73,6 +73,9 @@
 #     HVR_DBRK_EXTERNAL_LOC      (optional)
 #        If specified, and refresh with create table, create an external Delta table.
 #
+#     HVR_DBRK_FILEFORMAT        (optional)
+#        By default the script assumes CSV format.
+#
 #     HVR_DBRK_DELIMITER         (optional)
 #        The value of /FieldSeparator from the FileFormat action, if set
 #
@@ -144,6 +147,7 @@
 #     05/13/2021 RLR: Changes/fixes to using a managed table for the burst table
 #     05/14/2021 RLR: Fixed tracing in get_s3_handles
 #     05/17/2021 RLR: Tested, and fixed issues with, managed table logic with AWS hosted databricks
+#     05/19/2021 RLR: Added support for avro & parquet file formats
 #
 ################################################################################
 import sys
@@ -183,6 +187,7 @@ class Options:
     access_id = ''
     secret_key = ''
     region = ''
+    file_format = 'csv'
     delimiter = ','
     line_separator = ''
     burst_table_set_of_files = None
@@ -263,6 +268,10 @@ def load_agent_env():
 
 def env_load():
     options.trace = int(os.getenv('HVR_DBRK_TRACE', options.trace))
+    file_format = os.getenv('HVR_DBRK_FILEFORMAT', 'csv')
+    if file_format.lower() != 'csv' and file_format.lower() != 'parquet' and file_format.lower() != 'avro':
+        raise Exception("Invalid value {0} for {1}; must be one of 'csv','parquet','avro'".format(file_format, 'HVR_DBRK_FILEFORMAT'))
+    options.file_format = file_format.lower()
     options.delimiter = os.getenv('HVR_DBRK_DELIMITER', ',')
     if len(options.delimiter) != 1:
         raise Exception("Invalid value {0} for {1}; must be one character".format(options.delimiter, 'HVR_DBRK_DELIMITER'))
@@ -313,7 +322,10 @@ def trace_input():
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
     trace(3, "Isdeleted column is {}; column exists on target = {}".format(options.isdeleted, (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey {}".format(options.target_is_timekey))
-    trace(3, "COPY INTO format options: delimiter = '{}'  line separator = '{}'".format(options.delimiter, options.line_separator))
+    if options.file_format == 'csv':
+        trace(3, "File format options: format = '{}' delimiter = '{}'  line separator = '{}'".format(options.file_format, options.delimiter, options.line_separator))
+    else:
+        trace(3, "File format: '{}'".format(options.file_format))
     trace(3, "Create/recreate target table(s) during refresh is {1}".format(options.target_is_timekey, options.recreate_tables_on_refresh))
     trace(3, "Auto Optimize when table is created {}".format(options.auto_optimize))
     if options.burst_table_set_of_files == None:
@@ -1083,6 +1095,7 @@ def table_file_name_map():
 
     tbl_map = {}
     num_rows = {}
+    suffix = "." + options.file_format
     for item in zip(hvr_base_names, hvr_tbl_names, hvr_col_names, hvr_tbl_keys):
         tbl_map[item] = []
         num_rows[item] = 0
@@ -1090,8 +1103,8 @@ def table_file_name_map():
             pop_list = []
             for idx, f in enumerate(files):
                 name = f[f.find("-")+1:]
-                if name[-4:] == ".csv":
-                    name = name[:-4]
+                if name[-len(suffix):] == suffix:
+                    name = name[:-len(suffix)]
                 if name == item[1]:
                     file_path = prefix_directory(f)
                     tbl_map[item].append(file_path)
@@ -1171,7 +1184,7 @@ def files_in_s3(folder, file_list):
 
         for obj in contents:
             key = obj['Key']
-            if key.startswith(folder) and key.endswith('csv'):
+            if key.startswith(folder) and key.endswith(options.file_format):
                 objs.append(obj)
 
         # The S3 API is paginated, returning up to 1000 keys at a time.
@@ -1508,12 +1521,16 @@ def define_burst_table(stage_table, target_table, columns, file_list):
         else:
             stage_sql += "{0} string,".format(col)
     stage_sql = stage_sql[:-1]
-    stage_sql += ") using csv "
+    stage_sql += ") using {} ".format(options.file_format)
     if options.filestore == FileStore.AZURE_BLOB:
         stage_sql += " LOCATION 'wasbs://{0}@{1}.blob.core.windows.net/{2}'".format(options.container, options.resource, options.folder)
     else:
         stage_sql += " LOCATION 's3://{0}/{1}' ".format(options.container, options.folder)
-    stage_sql += ' OPTIONS (header "true", delimiter "{}")'.format(options.delimiter)
+    if options.file_format == 'csv':
+        if options.line_separator:
+            stage_sql += ' OPTIONS (header "true", delimiter "{}", lineSep "{}")'.format(options.delimiter, options.line_separator)
+        else:
+            stage_sql += ' OPTIONS (header "true", delimiter "{}")'.format(options.delimiter)
     trace(1, "Creating managed burst table {0}".format(stage_table))
     execute_sql(stage_sql, 'Create')
 
@@ -1536,16 +1553,17 @@ def copy_into_delta_table(load_table, target_table, columns, file_list):
         copy_sql += " FROM 'wasbs://{0}@{1}.blob.core.windows.net/') ".format(options.container, options.resource)
     else:
         copy_sql += " FROM 's3://{0}') ".format(options.container)
-    copy_sql += "FILEFORMAT = CSV "
+    copy_sql += "FILEFORMAT = {} ".format(options.file_format.upper())
     copy_sql += "FILES = ("
     for fname in file_list:
         copy_sql += "'{0}',".format(fname)
     copy_sql = copy_sql[:-1]
     copy_sql += ") "
-    if options.line_separator:
-        copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}', 'lineSep' = '{}') ".format(options.delimiter, options.line_separator)
-    else:
-        copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}') ".format(options.delimiter)
+    if options.file_format == 'csv':
+        if options.line_separator:
+            copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}', 'lineSep' = '{}') ".format(options.delimiter, options.line_separator)
+        else:
+            copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}') ".format(options.delimiter)
     copy_sql += "COPY_OPTIONS ('force' = 'false')"
 
     trace(1, "Copying from the file store into " + load_table)
