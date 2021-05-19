@@ -82,10 +82,11 @@
 #     HVR_DBRK_LINE_SEPARATOR    (optional)
 #        The value of /LineSeparator from the FileFormat action, if set
 #
-#     HVR_DBRK_MANAGED_BURST     (optional)
-#        If not set, the script will determine whether it can use a managed table for 
-#        the burst table.  If set to 'ON', use a managed table for the burst table.
-#        If set to any other value, create a delta table for the burst table.
+#     HVR_DBRK_UNMANAGED_BURST   (optional)
+#        If not set, the script will determine whether it can use an unmanaged table for 
+#        the burst table.  If set to 'ON', use an unmanaged table for the burst table
+#        with LOCATION pointing to integrate cycle files.  If set to any other value,
+#        create a managed for the burst table and load it from the integrate files.
 #
 #     HVR_DBRK_HVRCONNECT        (required for '-r' option)
 #        The connection string for connecting to the HVR repository, in base64. 
@@ -144,10 +145,13 @@
 #     05/12/2021 RLR: If the folder that the files are in includes the table name,
 #                     create the burst table as en external table pointing to the
 #                     folder where the files are.
-#     05/13/2021 RLR: Changes/fixes to using a managed table for the burst table
+#     05/13/2021 RLR: Changes/fixes to using a unmanaged table for the burst table
 #     05/14/2021 RLR: Fixed tracing in get_s3_handles
-#     05/17/2021 RLR: Tested, and fixed issues with, managed table logic with AWS hosted databricks
+#     05/17/2021 RLR: Tested, and fixed issues with, unmanaged table logic with AWS hosted databricks
 #     05/19/2021 RLR: Added support for avro & parquet file formats
+#                     Allow json files - not tested
+#                     Changed HVR_DBRK_MANAGED_BURST to HVR_DBRK_UNMANAGED_BURST and
+#                     fixed tracing verbage.
 #
 ################################################################################
 import sys
@@ -269,8 +273,8 @@ def load_agent_env():
 def env_load():
     options.trace = int(os.getenv('HVR_DBRK_TRACE', options.trace))
     file_format = os.getenv('HVR_DBRK_FILEFORMAT', 'csv')
-    if file_format.lower() != 'csv' and file_format.lower() != 'parquet' and file_format.lower() != 'avro':
-        raise Exception("Invalid value {0} for {1}; must be one of 'csv','parquet','avro'".format(file_format, 'HVR_DBRK_FILEFORMAT'))
+    if file_format.lower() == 'xml':
+        raise Exception("Invalid value {0} for {1}; must be one of 'csv','json','parquet','avro'".format(file_format, 'HVR_DBRK_FILEFORMAT'))
     options.file_format = file_format.lower()
     options.delimiter = os.getenv('HVR_DBRK_DELIMITER', ',')
     if len(options.delimiter) != 1:
@@ -278,8 +282,8 @@ def env_load():
     options.line_separator = os.getenv('HVR_DBRK_LINE_SEPARATOR', '')
     if len(options.line_separator) > 1:
         raise Exception("Invalid value {0} for {1}; must be one character".format(options.line_separator, 'HVR_DBRK_LINE_SEPARATOR'))
-    if os.getenv('HVR_DBRK_MANAGED_BURST', ''):
-        options.burst_table_set_of_files = os.getenv('HVR_DBRK_MANAGED_BURST', '').upper() == 'ON'
+    if os.getenv('HVR_DBRK_UNMANAGED_BURST', ''):
+        options.burst_table_set_of_files = os.getenv('HVR_DBRK_UNMANAGED_BURST', '').upper() == 'ON'
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
@@ -334,7 +338,7 @@ def trace_input():
         set_to = 'ON'
     else:
         set_to = 'OFF'
-    trace(3, "Create burst as managed table = '{}'".format(set_to))
+    trace(3, "Create burst as unmanaged table = '{}'".format(set_to))
 
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh is {}".format(not options.truncate_target_on_refresh))
@@ -1308,7 +1312,7 @@ def files_found_in_filestore(table, file_list):
     if files_in_list < len(file_list):
         raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(options.folder, table))
 
-    # validate and/or set managed burst table logic
+    # validate and/or set unmanaged burst table logic
     if options.burst_table_set_of_files and files_not_in_list:
         print("Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
         options.burst_table_set_of_files = False
@@ -1321,7 +1325,7 @@ def files_found_in_filestore(table, file_list):
                 options.burst_table_set_of_files = True
             else:
                 trace(1, "Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
-    trace(1, "Use performant managed table for burst = {}".format(options.burst_table_set_of_files))
+    trace(1, "Use performant unmanaged table for burst = {}".format(options.burst_table_set_of_files))
     return True
 
 def delete_files_from_filestore(file_list):
@@ -1531,7 +1535,7 @@ def define_burst_table(stage_table, target_table, columns, file_list):
             stage_sql += ' OPTIONS (header "true", delimiter "{}", lineSep "{}")'.format(options.delimiter, options.line_separator)
         else:
             stage_sql += ' OPTIONS (header "true", delimiter "{}")'.format(options.delimiter)
-    trace(1, "Creating managed burst table {0}".format(stage_table))
+    trace(1, "Creating unmanaged burst table {0}".format(stage_table))
     execute_sql(stage_sql, 'Create')
 
 def copy_into_delta_table(load_table, target_table, columns, file_list):
