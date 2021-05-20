@@ -45,12 +45,14 @@
 #   -b prefix       The before prefix string prepended to the before image column
 #                   names. The default is 'Old&'.
 #
-#   -c c/a          Collapse update before and after image messages into one after
+#   -c c/a<d>       Collapse update before and after image messages into one after
 #                   image record but adding the before columns with the column name
 #                   prefixed by the prefix specified in -b. If '-cc' is specified, only the before
 #                   values of the columns that actually changed are added to the message.
 #                   If '-ca' is set, then all the befores are included.
 #                   This option only affects hvp_op 4 and 2, all other pass through unchanged.
+#                   If a 'd' is appended ('-cad' or '-ccd'), then if a row is unchanged,
+#                   it will be discarded.
 #                   **** THIS ASSUMES PAYLOAD IS JSON ROW_ARRY format ****
 #
 #   -f fail/ok      If the integrate file does not exist, controls whether
