@@ -137,6 +137,7 @@
 #     04/29/2021 RLR:  Added the encoding option to the open of the journal file
 #     05/18/2021 RLR:  If setting partition id based on transaction id in the file name,
 #                      mark the end of every transaction in eventData.properties
+#     05/20/2021 RLR:  Add option to skip unchanged rows in collapse logic
 #
 ################################################################################
 
@@ -359,10 +360,10 @@ def print_options():
     trace(1, "EventHub key = {}", options.ehub_key)
     trace(1, "EventHub partition = {}", options.ehub_partition)
     trace(1, "EventHub name = {}", options.ehub_name)
-    trace(1, "filename list = {}", options.filenames)
-    trace(1, "filename location = {}", options.file_path)
-    trace(1, "integrate filename expression = {}", options.file_expression)
-    trace(1, "integrate filename elements = {}", options.ehub_name_pattern)
+    trace(1, "Filename list = {}", options.filenames)
+    trace(1, "Filename location = {}", options.file_path)
+    trace(1, "Integrate filename expression = {}", options.file_expression)
+    trace(1, "Integrate filename elements = {}", options.ehub_name_pattern)
     trace(1, "EventHub name format = {}", options.name_format)
     trace(1, "EventHub name elements = {}", options.file_pattern)
     trace(1, "Maximum message size = {}", options.maximum_message_size)
@@ -613,13 +614,15 @@ def make_new_address(hvurl, eventhub):
 
 
 def condense_before_after(array_data, op_type_col, before_prefix, mode):
-    trace(1, "condense_before_after()")
+    trace(2, "condense_before_after()")
     import json
     from json.decoder import JSONDecodeError
     expecting_after = False
     output_array = []
     update_before_op = 4
     update_after_op = 2
+    all_before_columns = ('a' in mode)
+    discard_no_change = ('d' in mode)
 
     try:
         json_array = json.loads(array_data)
@@ -643,16 +646,28 @@ def condense_before_after(array_data, op_type_col, before_prefix, mode):
                 else:
                     # Process the after image
                     expecting_after = False
+                    changed_cols = 0
                     for key, before_value in before_row.items():
                         if key == op_type_col or key in options.ignore_columns:
                             continue
-                        if mode == 'a':
+                        if row[key] != before_value:
+                            changed_cols += 1
+                        if all_before_columns:
                             row[before_prefix + key] = before_value
                         else:
                             if row[key] != before_value:
                                 row[before_prefix + key] = before_value
 
-            output_array.append(row)
+            if changed_cols==0 and discard_no_change:
+                # to work around a failure in trace
+                msg = "Discard unchanged row: {}".format(row)
+                msg = msg.replace('{','(')
+                msg = msg.replace('}',')')
+                trace(2, msg)
+            else:
+                output_array.append(row)
+    if not output_array:
+        return ''
     return json.dumps(output_array)
 
 ##### Main function ############################################################
@@ -836,6 +851,8 @@ def send_batch(producer, start, files, txids=[], asked_partitionid = None):
     for i in range(start, len(files)):
         full_name = options.file_path + '/' + files[i]
         file_as_string = contents_of_integ_file(full_name)
+        if not file_as_string:
+            continue
         event = EventData(file_as_string)
         if txids:
             end_trans = 'false'
@@ -851,19 +868,22 @@ def send_batch(producer, start, files, txids=[], asked_partitionid = None):
             newstart = i
             break
 
-    if options.trace > 0:
-        partinfo = ''
-        if asked_partitionid:
-            partinfo = ", partition_id = {}".format(asked_partitionid)
-        trace(1, "Send batch {} bytes{}".format(event_data_batch.size_in_bytes, partinfo))
+    if not event_data_batch.size_in_bytes:
+        trace(2, "Batch empty (maybe due to unchanged rows skipped); skip to next batch")
+    else:
+        if options.trace > 0:
+            partinfo = ''
+            if asked_partitionid:
+                partinfo = ", partition_id = {}".format(asked_partitionid)
+            trace(1, "Send batch {} bytes{}".format(event_data_batch.size_in_bytes, partinfo))
+        try:
+            producer.send_batch(event_data_batch)
+        except EventHubError as eh_err:
+            print("Error uploading ")
+            raise eh_err
+        journal_batch(producer, asked_partitionid, None)
+        byte_total += event_data_batch.size_in_bytes
 
-    try:
-        producer.send_batch(event_data_batch)
-    except EventHubError as eh_err:
-        print("Error uploading ")
-        raise eh_err
-    byte_total += event_data_batch.size_in_bytes
-    journal_batch(producer, asked_partitionid, None)
     return newstart   
 
 def upload_set_of_files(producer, files, txids=[], partition_id=None):
