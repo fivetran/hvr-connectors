@@ -140,6 +140,7 @@
 #     05/18/2021 RLR:  If setting partition id based on transaction id in the file name,
 #                      mark the end of every transaction in eventData.properties
 #     05/20/2021 RLR:  Add option to skip unchanged rows in collapse logic
+#     05/21/2021 RLR:  Fixed a syntax bug
 #
 ################################################################################
 
@@ -642,13 +643,13 @@ def condense_before_after(array_data, op_type_col, before_prefix, mode):
             expecting_after = True
             before_row = row
         else:
+            changed_cols = 0
             if expecting_after:
                 if op_type != update_after_op:
                     raise Exception('Expected after image immediately after before image. Received = {}'.format(op_type))
                 else:
                     # Process the after image
                     expecting_after = False
-                    changed_cols = 0
                     for key, before_value in before_row.items():
                         if key == op_type_col or key in options.ignore_columns:
                             continue
