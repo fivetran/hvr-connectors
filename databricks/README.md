@@ -33,6 +33,12 @@ The following options are available with this connector:
   - Python boto3 package downloaded and installed
   - An S3 bucket - Integrate will land files here
   - The Databricks cluster configured to be able to access the S3 bucket
+- The Integrate action defined with /ReorderRows=SORT_COALESCE
+- A FileFormat action with one of the following (the default is CSV)
+  - /Csv /HeaderLine
+  - /Avro
+  - /Json
+  - /Parquet
 
 ## Environment variables
 The following environment variables are required by the the agent or optionally influence the behavior of
@@ -57,9 +63,9 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 
 | Option | Description |
 | ------ | ----------- |
-|   -d   | Name of the SoftDelete column.  Default is 'is_deleted'.  Set this option if the SoftDelete column is configured with a name other than 'is_deleted'. |
+|   -d   | Name of the SoftDelete column.  Default is 'is_deleted'.  Set this option if the SoftDelete column is configured <br>with a name other than 'is_deleted'. |
 |   -D   | Name of the SoftDelete column.  Set this option if the SoftDelete column is in the target table. |
-|   -o   | Name of the {hvr_op} column.  Default is ‘op_type’.  Set this option if the name of the Extra column populated by {hvr_op} is different than ‘op_type’. |
+|   -o   | Name of the {hvr_op} column.  Default is ‘op_type’.  Set this option if the name of the Extra column populated by <br>{hvr_op} is different than ‘op_type’. |
 |   -O   | Name of the {hvr_op} column.   Set this option if the target table includes the Extra column. |
 |   -p   | Set this option on a refresh of a TimeKey target if it is desired that the target is not truncated before the refresh. |
 |   -r   | Set this option to instruct the script to create/recreate the target table during Refresh |
@@ -88,23 +94,6 @@ be added to define a precision lower than or equal to 38.
 
 If the FileFormat is JSON, the JsonMode should be set to RowFragments.
 
-## Refresh Create/Recreate target table
-The connector can be configured to create/recreate the target table when refresh is run.  The requirements are:
-- Integrate runs on the hub
-- The AgentPlugin action that defines the Databricks connector has “-r” in the UserArguments. For example:  
-       AgentPlugin /Command=hvrdatabricksagent.py /UserArgument=”-r” /Context=”refresh”
-- The repository connection string is provided to the Agent Plugin via the HVR_DBRK_HVRCONNECT Environment action.
-
-To get the value for the HVR_DBRK_HVRCONNECT Environment action:
-1. In the GUI run Initialize to get the connection string.  For example, my MySQL hub's connection is:  '-uhvr/!{6mATRwyh}!' -h mysql '142.171.34.118~3308~mysql'
-2. Convert to base64 in any web converter.  
-
-The script can create the target table as a managed, or an unmanged table.   By default the table is created managed.   
-To create an unmanaged table, specify the location of the table using the HVR_DBRK_EXTERNAL_LOC environment action.  
-Note that the pathname specified by HVR_DBRK_EXTERNAL_LOC may contain {hvr_tbl_name} and, if it does, the script will 
-perform the substitution.  For example:
-       /Name=HVR_DBRK_EXTERNAL_LOC /Value="/mnt/delta/{hvr_tbl_name}"
-
 ## Burst table
 The script tries to create the burst table as an unmanaged table. That is, with syntax such as:
 
@@ -127,8 +116,15 @@ An Environment action, HVR_DBRK_UNMANAGED_BURST, can be used to force this logic
 HVR_DBRK_UNMANAGED_BURST=ON, and there are more files in the location than in the integrate cycle for the table, the 
 script will revert to the managed table logic.
 
-## Sample configuration where the target is a replicate copy
-The ColumnProperties actions are REQUIRED
+## Target is a replication copy
+To maintain a replication copy, the connector requires that the following ColumnProperties actions are defined. Note 
+that the connector will not apply these columns to the Databricks target table.
+
+    ColumnProperties /Name=op_type /Extra /IntegrateExpression={hvr_op} /Datatype=integer /Context=!refresh
+    ColumnProperties /Name=is_deleted /Extra /SoftDelete /Datatype=integer /Context=!refresh
+
+A simple example of the configuration for a replicate copy follows:
+
     AgentPlugin /Command=hvrdatabricksagent.py
     ColumnProperties /Name=op_type /Extra /IntegrateExpression={hvr_op} /Datatype=integer /Context=!refresh
     ColumnProperties /Name=is_deleted /Extra /SoftDelete /Datatype=integer /Context=!refresh
@@ -137,19 +133,17 @@ The ColumnProperties actions are REQUIRED
     FileFormat /Csv /HeaderLine
     Integrate /ReorderRows=SORT_COALESCE
 
-## Sample configuration - Timekey target
-No ColumnProperties actions are required
-    AgentPlugin /Command=hvrdatabricksagent.py
-    ColumnProperties /Name=hvr_integ_key /Extra /IntegrateExpression={hvr_integ_seq} /Key /TimeKey /Datatype=varchar /Length=36
-    ColumnProperties /Name=hvr_op_type /Extra /IntegrateExpression={hvr_op} /Datatype=integer
-    Environment /Name=HVR_DBRK_FILESTORE_KEY /Value=“jkhkgkjhkjh="
-    Environment /Name=HVR_DBRK_TIMEKEY /Value=on
-    Environment /Name=HVR_DBRK_DSN /Value=azuredbrk
-    FileFormat /Csv /HeaderLine
-    Integrate /ReorderRows=SORT_COALESCE
+## Target is TimeKey
+If the connector is configured for a TimeKey target (HVR_DBRK_TIMEKEY=ON or AgentPlugin /UserArguments="-t"),
+then the connector will load all the changes in the files directly to the target table.  Any /Extra column defined 
+for the target exist in the target table.
 
-## Sample configuration - SoftDelete target
-The ColumnProperties action is REQUIRED
+## Target is SoftDelete
+If the target is SoftDelete, as opposed to a replicate copy, the connector must be configured to preserve the
+SoftDelete column.  The SoftDelete column can have any name.  To indicate to the connector the name of the 
+SoftDelete column, and that it should be preserved, use the "-D" option in the AgentPlugin /UserArguments.
+A sample configuration for SoftDelete follows:
+
     AgentPlugin /Command=hvrdatabricksagent.py /UserArgument="-D is_deleted"
     ColumnProperties /Name=is_deleted /Extra /SoftDelete /Datatype=integer
     Environment /Name=HVR_DBRK_FILESTORE_KEY /Value=“jkhkgkjhkjh="
@@ -157,13 +151,20 @@ The ColumnProperties action is REQUIRED
     FileFormat /Csv /HeaderLine
     Integrate /ReorderRows=SORT_COALESCE
 
-## Sample configuration - Copy target - Refresh create/recreate
-    AgentPlugin /Command=hvrdatabricksagent.py /UserArgument=”-r” /Context=”refresh”
-    AgentPlugin /Command=hvrdatabricksagent.py /Context=”!refresh”
-    ColumnProperties /Name=op_type /Extra /IntegrateExpression={hvr_op} /Datatype=integer /Context=!refresh
-    ColumnProperties /Name=is_deleted /Extra /SoftDelete /Datatype=integer /Context=!refresh
-    Environment /Name=HVR_DBRK_FILESTORE_KEY /Value=“ldkfjljfdgljdfgljdflgj”
-    Environment /Name=HVR_DBRK_DSN /Value=azuredbrk
-    Environment /Name=HVR_DBRK_HVRCONNECT /Value=Jy11aHZyLyF7Nm1BU0pVeWh9IScgLWggbXlzcWwgJzE5Mi4xNjguNTYuMTEwfjMzMDZ+bXlzcWwn
-    FileFormat /Csv /HeaderLine
-    Integrate /ReorderRows=SORT_COALESCE
+## Refresh Create/Recreate target table
+The connector can be configured to create/recreate the target table when refresh is run.  The requirements are:
+- Integrate runs on the hub
+- The AgentPlugin action that defines the Databricks connector has “-r” in the UserArguments. For example:  
+       AgentPlugin /Command=hvrdatabricksagent.py /UserArgument=”-r” /Context=”refresh”
+- The repository connection string is provided to the Agent Plugin via the HVR_DBRK_HVRCONNECT Environment action.
+
+To get the value for the HVR_DBRK_HVRCONNECT Environment action:
+1. In the GUI run Initialize to get the connection string.  For example, my MySQL hub's connection is:  '-uhvr/!{6mATRwyh}!' -h mysql '142.171.34.118~3308~mysql'
+2. Convert to base64 in any web converter.  
+
+The script can create the target table as a managed, or an unmanged table.   By default the table is created managed.   
+To create an unmanaged table, specify the location of the table using the HVR_DBRK_EXTERNAL_LOC environment action.  
+Note that the pathname specified by HVR_DBRK_EXTERNAL_LOC may contain {hvr_tbl_name} and, if it does, the script will 
+perform the substitution.  For example:
+       /Name=HVR_DBRK_EXTERNAL_LOC /Value="/mnt/delta/{hvr_tbl_name}"
+
