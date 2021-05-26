@@ -152,6 +152,7 @@
 #                     Allow json files - not tested
 #                     Changed HVR_DBRK_MANAGED_BURST to HVR_DBRK_UNMANAGED_BURST and
 #                     fixed tracing verbage.
+#     05/26/2021 RLR: Throw error if create-table-on-refresh set and running under python2
 #
 ################################################################################
 import sys
@@ -1005,6 +1006,8 @@ def init_createtable_info():
 def initialize_hvr_connect():
     import base64
 
+    if not python3:
+        raise Exception("Create-table-on-refresh ('-r' option) requires Python 3")
     options.hvr_home = os.getenv('HVR_HOME', '')
     if not options.hvr_home:
         raise Exception("$HVR_HOME must be defined")
