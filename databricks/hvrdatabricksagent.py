@@ -153,6 +153,7 @@
 #                     Changed HVR_DBRK_MANAGED_BURST to HVR_DBRK_UNMANAGED_BURST and
 #                     fixed tracing verbage.
 #     05/26/2021 RLR: Throw error if create-table-on-refresh set and running under python2
+#                     Added print_raw method
 #
 ################################################################################
 import sys
@@ -243,6 +244,15 @@ def version_check():
 
     python3 = sys.version_info[0] == 3
     
+def print_raw(_msg, tgt= None):
+    _msg= re.sub(r'!\{[^}]*\}!', '!{xxxxxxxx}!', _msg)
+
+    if tgt is None:
+        tgt= sys.stdout
+
+    tgt.write(_msg)
+    tgt.flush()
+
 def load_agent_env():
     agent_env= {}
 
