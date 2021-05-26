@@ -141,6 +141,7 @@
 #                      mark the end of every transaction in eventData.properties
 #     05/20/2021 RLR:  Add option to skip unchanged rows in collapse logic
 #     05/21/2021 RLR:  Fixed a syntax bug
+#     05/26/2021 RLR:  Fixed logic to skip unchanged rows in collapse logic (was skipping inserts)
 #
 ################################################################################
 
@@ -616,8 +617,8 @@ def make_new_address(hvurl, eventhub):
     return p.geturl()
 
 
-def condense_before_after(array_data, op_type_col, before_prefix, mode):
-    trace(2, "condense_before_after()")
+def collapse_before_after(array_data, op_type_col, before_prefix, mode):
+    trace(2, "collapse_before_after()")
     import json
     from json.decoder import JSONDecodeError
     expecting_after = False
@@ -660,15 +661,14 @@ def condense_before_after(array_data, op_type_col, before_prefix, mode):
                         else:
                             if row[key] != before_value:
                                 row[before_prefix + key] = before_value
-
-            if changed_cols==0 and discard_no_change:
-                # to work around a failure in trace
-                msg = "Discard unchanged row: {}".format(row)
-                msg = msg.replace('{','(')
-                msg = msg.replace('}',')')
-                trace(2, msg)
-            else:
-                output_array.append(row)
+                if changed_cols==0 and discard_no_change:
+                    # to work around a failure in trace
+                    msg = "Discard unchanged row: {}".format(row)
+                    msg = msg.replace('{','(')
+                    msg = msg.replace('}',')')
+                    trace(2, msg)
+                    continue
+            output_array.append(row)
     if not output_array:
         return ''
     return json.dumps(output_array)
@@ -722,7 +722,7 @@ def contents_of_integ_file(file_name):
     if options.collapse_befores and options.mode == "integ_end":
         # reformat the file content
         len_b4 = len(content)
-        content = condense_before_after(content, options.op_type_col, options.before_prefix, options.collapse_befores)
+        content = collapse_before_after(content, options.op_type_col, options.before_prefix, options.collapse_befores)
         if len(content) > options.maximum_message_size:
             raise AgentError( ("File {} ({} bytes), after update processing is {} bytes. Cannot send because of maximum message "
                            "limit {}. Adjust Integrate /MaxFileSize to something lower.".format(file_name, len_b4, len(content), options.maximum_message_size)))
