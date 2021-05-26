@@ -86,6 +86,8 @@
 #     04/12/2021 RLR: Added option to check the column data against the target columns
 #     05/14/2021 RLR: Fixed the trace line in the column data check
 #     05/16/2021 RLR: Skip the header line in the column data check
+#     05/26/2021 RLR: Added more trace to check progress of check logic 
+#                     Reset the connection if time spent checking > 60 seconds
 #
 ################################################################################
 import sys
@@ -115,6 +117,8 @@ class Options:
     target_is_timekey = False
     check_column_data = False
     truncate_target_on_refresh = True
+
+IDLE_CONN_TIMEOUT = 60
 
 file_counter = 0
 
@@ -336,6 +340,10 @@ def close_connect():
     options.cursor.close()
     options.odbc.close()
 
+def reset_connect():
+    close_connect()
+    get_connect()
+
 def execute_sql(sql_stmt, sql_name):
     trace(2, "Execute: {0}".format(sql_stmt))
     try:
@@ -496,13 +504,20 @@ def get_col_type(colname, table_columns_and_types):
 def check_data_in_file(columns, table_columns_and_types, file_list):
     import csv
 
+    count = 0
     for fname in file_list:
         with open(fname) as csvfile:
             trace(2,"Check data in {}".format(fname))
+            trace(2,"Load file into csv reader")
             rows = csv.reader(csvfile, delimiter=options.delimiter)
+            trace(2,"Check row by row")
             next(rows)   # skip the header
             showdate = 0
             for row in rows:
+                count += 1
+                if count % 100000 == 0:
+                    trace(2, "Checked {} rows".format(count))
+                    time.sleep(1)
                 for colnm, colval in zip(columns, row):
                     col_type = get_col_type(colnm, table_columns_and_types)
                     if col_type:
@@ -572,11 +587,17 @@ def process_table(tab_entry, file_list, numrows):
     col_types, raw_columns = process_table_columns(target_table, columns)
     t[2] = timer()
 
+    check_time = 0
     if use_burst_logic:
         merge_table_data_to_target(load_table, target_table, file_columns, col_types, tab_entry[3], file_list)
     else:
         if options.check_column_data:
+            check_start = timer()
             check_data_in_file(columns, raw_columns, file_list)
+            check_time = int(timer() - check_start)
+            if int(check_time) > IDLE_CONN_TIMEOUT:
+                trace(2, "Spent {} seconds checking validity of data; will reset connection".format(check_time))
+                reset_connect()
         push_table_data_to_target(target_table, file_columns, file_list)
 
     t[3] = timer()
@@ -593,8 +614,12 @@ def process_table(tab_entry, file_list, numrows):
                  " ".format(numrows, target_table, t[4]-t[0], t[2]-t[1], t[3]-t[2]))
     else:
         if options.mode == "refr_write_end":
-            trace(0, "Refresh of '{0}', {1} rows, took {2:.2f} seconds:"
-                     " copy into target: {3:.2f}s,".format(target_table, numrows, t[3]-t[0], t[2]-t[1],))
+            if check_time:
+                trace(0, "Refresh of '{0}', {1} rows, took {2:.2f} seconds:"
+                         " check data validity: {3}s, copy into target: {4:.2f}s,".format(target_table, numrows, t[3]-t[0], check_time, t[2]-t[1],))
+            else:
+                trace(0, "Refresh of '{0}', {1} rows, took {2:.2f} seconds:"
+                         " copy into target: {3:.2f}s,".format(target_table, numrows, t[3]-t[0], t[2]-t[1],))
         else:
             trace(0, "Copy of {0} rows into {1} took {2:.2f} seconds".format(numrows, target_table, t[4]-t[0]))
 
