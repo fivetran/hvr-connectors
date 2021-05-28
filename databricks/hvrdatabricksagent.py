@@ -58,6 +58,9 @@
 #        If specified will be used as the connect string for the connection
 #        to Databricks, if set HVR_DBRK_DSN will be ignored
 #
+#     HVR_DBRK_CONNECT_TIMEOUT   (optional)
+#        The time, in seconds, to set the timeout in the ODBC connect call.
+#
 #     HVR_DBRK_FILESTORE_ID      (optional)
 #        The access ID for the S3 cloud storage
 #
@@ -154,6 +157,7 @@
 #                     fixed tracing verbage.
 #     05/26/2021 RLR: Throw error if create-table-on-refresh set and running under python2
 #                     Added print_raw method
+#     05/28/2021 RLR: Get the ODBC connect timeout from an Environment variable
 #
 ################################################################################
 import sys
@@ -184,6 +188,7 @@ class Options:
     tablename_expression = False
     dsn = None
     connect_string = None
+    connect_timeout = 0
     hvr_opts = []
     url = ''
     resource = ''
@@ -301,6 +306,12 @@ def env_load():
     options.dsn = os.getenv('HVR_DBRK_DSN', '')
     options.external_loc = os.getenv('HVR_DBRK_EXTERNAL_LOC', '')
     options.connect_string = os.getenv('HVR_DBRK_CONNECT_STRING', '')
+    conn_timeout = os.getenv('HVR_DBRK_CONNECT_TIMEOUT','')
+    if conn_timeout:
+        try:
+            options.connect_timeout = int(conn_timeout)
+        except Exception as err:
+            print("Invalid value '{}' defined for HVR_DBRK_CONNECT_TIMEOUT; must be integer".format(conn_timeout))
     if os.getenv('HVR_DBRK_TIMEKEY', '').upper() == 'ON':
         options.target_is_timekey = True
     options.agent_env = load_agent_env()
@@ -334,6 +345,8 @@ def trace_input():
     """
     trace(3, "============================================")
     trace(3, "Resource: {0}; Bucket/container: {1}, Root folder: {2}".format(options.resource, options.container, options.directory))
+    if options.connect_timeout:
+        trace(3, "Connection tineout = {}".format(options.connect_timeout))
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
     trace(3, "Isdeleted column is {}; column exists on target = {}".format(options.isdeleted, (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey {}".format(options.target_is_timekey))
@@ -1360,7 +1373,12 @@ def get_databricks_handles():
         connect_string = "DSN={}".format(options.dsn)
     connect_string += ";UserAgentEntry=HVR"
     try:
-        Connections.odbc = pyodbc.connect(connect_string, autocommit=True, timeout=600)
+        if options.connect_timeout:
+            trace(3, "ODBC connect using '{}'; timeout = {} seconds".format(connect_string, options.connect_timeout))
+            Connections.odbc = pyodbc.connect(connect_string, autocommit=True, timeout=options.connect_timeout)
+        else:
+            trace(3, "ODBC connect using '{}'".format(connect_string))
+            Connections.odbc = pyodbc.connect(connect_string, autocommit=True)
         Connections.cursor = Connections.odbc.cursor()
     except pyodbc.Error as ex:
         print("Failed to connect using connect string '{}'".format(connect_string))
