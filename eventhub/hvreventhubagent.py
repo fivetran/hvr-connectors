@@ -55,6 +55,11 @@
 #                   it will be discarded.
 #                   **** THIS ASSUMES PAYLOAD IS JSON ROW_ARRY format ****
 #
+#   -d colname      If a column name is specified, the script will identify the last row in a
+#                   transaciton and set the named column to '1'.  If this is used with -cad or
+#                   -cdd then the script will not discard the last change so it can be marked.
+#                   **** THIS ASSUMES PAYLOAD IS JSON ROW_ARRY format ****
+#
 #   -f fail/ok      If the integrate file does not exist, controls whether
 #                   the agent fails or continues.  The default is to fail.  If set 
 #                   to "-f ok" then a message will be logged and the agent
@@ -142,6 +147,8 @@
 #     05/20/2021 RLR:  Add option to skip unchanged rows in collapse logic
 #     05/21/2021 RLR:  Fixed a syntax bug
 #     05/26/2021 RLR:  Fixed logic to skip unchanged rows in collapse logic (was skipping inserts)
+#     05/27/2021 RLR:  Added logic to mark the end of the transaction by setting the column       
+#                      value of a user column to '1' for the last row in a transaction
 #
 ################################################################################
 
@@ -180,10 +187,12 @@ class Options:
     file_path = ''
     state_dir = ''
     maximum_message_size = 1046500
+    process_json_files = False
     collapse_befores = ''
     op_type_col = ''
     before_prefix = '&Old'
     ignore_columns = []
+    end_trans_col = ''
     debug_mode = False
     remove_each_file_as_done = True
     fail_if_file_not_exist = True
@@ -387,10 +396,14 @@ def print_options():
         arg_action = "'ok': skip the file and continue processing"
     trace(2, "If the integrate file size exceeds the maximum message size = {}", arg_action)
     trace(2, "State directory = {}", options.state_dir)
-    trace(2, "Collapse before and after images into one after = {}", options.collapse_befores)
-    trace(2, "Column name containing {{hvr_op}} = {}", options.op_type_col)
-    trace(2, "Ignore changes to {}", options.ignore_columns)
-    trace(2, "Before column prefix = {}", options.before_prefix)
+    trace(2, "Data processing if /Json /ROW_ARRAY = {}".format(options.process_json_files))
+    if options.process_json_files:
+        trace(2, "  Column to mark end-of-transaction = {}".format(options.end_trans_col))
+        trace(2, "  Collapse before and after images into one after = {}", options.collapse_befores)
+        if options.collapse_befores:
+            trace(2, "    Column name containing {{hvr_op}} = {}", options.op_type_col)
+            trace(2, "    Ignore changes to {}", options.ignore_columns)
+            trace(2, "    Before column prefix = {}", options.before_prefix)
     trace(2, "debug_mode = {}", options.debug_mode)
     trace(2, "Journal batches sent = {}", options.jnl_batches)
     trace(1, "trace = {}", options.trace)
@@ -454,53 +467,56 @@ def get_options(argv):
 
     load_environment()
 
-    if not userargs:
-        trace(2, "Arguments {} {} {}", argv[1], argv[2], argv[3])
-        return
+    if userargs:
+        try:
+#           opts, args= getopt.getopt(userargs, 's:a:u:k:e:m:p:i:h:r:c:o:b:f:t:x:z:')
+            opts, args= getopt.getopt(userargs, 'a:b:c:d:e:f:h:i:k:m:o:p:r:s:t:u:x:z:')
+        except getopt.GetoptError as e:
+            usage(str(e))
+    
+        for (opt_key, opt_val) in opts:
+            if opt_key == '-a':  
+                options.ehub_address = opt_val
+            elif opt_key == '-b':
+                options.before_prefix = opt_val
+            elif opt_key == '-c':
+                options.collapse_befores = opt_val
+            elif opt_key == '-d':
+                options.end_trans_col = opt_val
+            elif opt_key == '-e': 
+                options.ehub_name = opt_val
+            elif opt_key == '-f':
+                options.fail_if_file_not_exist = (opt_val != 'ok')
+            elif opt_key == '-h':
+                options.name_format = opt_val
+            elif opt_key == '-i':
+                options.file_expression = opt_val
+            elif opt_key == '-k':
+                options.ehub_key = opt_val
+            elif opt_key == '-m':
+                options.maximum_message_size = int(opt_val)
+            elif opt_key == '-o':
+                options.op_type_col = opt_val
+            elif opt_key == '-p':
+                options.ehub_partition = opt_val
+            elif opt_key == '-r':
+                options.remove_each_file_as_done = (opt_val != 'end')
+            elif opt_key == '-s':
+                options.ehub_namespace = opt_val
+            elif opt_key == '-t':
+                options.trace= int(opt_val)
+            elif opt_key == '-u':
+                options.ehub_user = opt_val
+            elif opt_key == '-x':
+                options.fail_if_file_too_large = (opt_val != 'ok')
+            elif opt_key == '-z':
+                options.debug_mode = (opt_val == 'on')
 
-    try:
-        opts, args= getopt.getopt(userargs, 's:a:u:k:e:m:p:i:h:r:c:o:b:f:t:x:z:')
-    except getopt.GetoptError as e:
-        usage(str(e))
+    if options.collapse_befores or options.end_trans_col:
+        options.process_json_files = True
 
-    for (opt_key, opt_val) in opts:
-        if opt_key == '-e':                          # Required through argument or environment variable
-            options.ehub_name = opt_val
-        elif opt_key == '-k':
-            options.ehub_key = opt_val
-        elif opt_key == '-s':
-            options.ehub_namespace = opt_val
-        elif opt_key == '-u':
-            options.ehub_user = opt_val
-        elif opt_key == '-a':                        # Optional
-            options.ehub_address = opt_val
-        elif opt_key == '-b':  # Optional
-            options.before_prefix = opt_val
-        elif opt_key == '-c':  # Optional
-            options.collapse_befores = opt_val
-        elif opt_key == '-f':
-            options.fail_if_file_not_exist = (opt_val != 'ok')
-        elif opt_key == '-h':
-            options.name_format = opt_val
-        elif opt_key == '-i':
-            options.file_expression = opt_val
-        elif opt_key == '-m':
-            options.maximum_message_size = int(opt_val)
-        elif opt_key == '-o':
-            options.op_type_col = opt_val
-        elif opt_key == '-p':
-            options.ehub_partition = opt_val
-        elif opt_key == '-r':
-            options.remove_each_file_as_done = (opt_val != 'end')
-        elif opt_key == '-t':
-            options.trace= int(opt_val)
-        elif opt_key == '-x':
-            options.fail_if_file_too_large = (opt_val != 'ok')
-        elif opt_key == '-z':
-            options.debug_mode = (opt_val == 'on')
-
-    trace(2, "Arguments {} {} {} {}", argv[1], argv[2], argv[3], argv[4])
-    if args:
+    trace(2, "Arguments {} {} {} {}", options.mode, options.channel, options.location, userargs)
+    if userargs and args:
         usage('extra userargs specified')
 
 def validate_options():
@@ -617,16 +633,20 @@ def make_new_address(hvurl, eventhub):
     return p.geturl()
 
 
-def collapse_before_after(array_data, op_type_col, before_prefix, mode):
-    trace(2, "collapse_before_after()")
+def process_row_data(array_data, end_transaction):
+    trace(2, "process_row_data()")
     import json
     from json.decoder import JSONDecodeError
     expecting_after = False
+    last_row = {}
     output_array = []
     update_before_op = 4
     update_after_op = 2
-    all_before_columns = ('a' in mode)
-    discard_no_change = ('d' in mode)
+    all_before_columns = ('a' in options.collapse_befores)
+    discard_no_change = ('d' in options.collapse_befores)
+
+    if options.end_trans_col:
+        trace(2, "process_row_data end-transaction = {}".format(end_transaction))
 
     try:
         json_array = json.loads(array_data)
@@ -634,43 +654,52 @@ def collapse_before_after(array_data, op_type_col, before_prefix, mode):
         raise Exception("JSON decode error: {}; note that the 'collapse before/after' logic expects JSON/ROW_ARRAY".format(e))
 
     for row in json_array:
-        if op_type_col not in row.keys():
-            raise Exception('/Extra column {} is required with /IntegrateExpression={{hvr_op}}'.format(op_type_col))
-        else:
-            op_type = row[op_type_col]
-
-        if op_type == update_before_op:
-            # Save the before image
-            expecting_after = True
-            before_row = row
-        else:
-            changed_cols = 0
-            if expecting_after:
-                if op_type != update_after_op:
-                    raise Exception('Expected after image immediately after before image. Received = {}'.format(op_type))
-                else:
-                    # Process the after image
-                    expecting_after = False
-                    for key, before_value in before_row.items():
-                        if key == op_type_col or key in options.ignore_columns:
-                            continue
-                        if row[key] != before_value:
-                            changed_cols += 1
-                        if all_before_columns:
-                            row[before_prefix + key] = before_value
-                        else:
+        if options.collapse_befores and options.mode == "integ_end":
+            if options.op_type_col not in row.keys():
+                raise Exception('/Extra column {} is required with /IntegrateExpression={{hvr_op}}'.format(options.op_type_col))
+            else:
+                op_type = row[options.op_type_col]
+    
+            if op_type == update_before_op:
+                # Save the before image
+                expecting_after = True
+                before_row = row
+            else:
+                changed_cols = 0
+                if expecting_after:
+                    if op_type != update_after_op:
+                        raise Exception('Expected after image immediately after before image. Received = {}'.format(op_type))
+                    else:
+                        # Process the after image
+                        expecting_after = False
+                        for key, before_value in before_row.items():
+                            if key == options.op_type_col or key in options.ignore_columns:
+                                continue
                             if row[key] != before_value:
-                                row[before_prefix + key] = before_value
-                if changed_cols==0 and discard_no_change:
-                    # to work around a failure in trace
-                    msg = "Discard unchanged row: {}".format(row)
-                    msg = msg.replace('{','(')
-                    msg = msg.replace('}',')')
-                    trace(2, msg)
-                    continue
+                                changed_cols += 1
+                            if all_before_columns:
+                                row[options.before_prefix + key] = before_value
+                            else:
+                                if row[key] != before_value:
+                                    row[options.before_prefix + key] = before_value
+                    if changed_cols==0 and discard_no_change:
+                        # to work around a failure in trace
+                        msg = "Discard unchanged row: {}".format(row)
+                        msg = msg.replace('{','(')
+                        msg = msg.replace('}',')')
+                        trace(2, msg)
+                        last_row = row
+                        continue
+                last_row = {}
+                output_array.append(row)
+        else:
             output_array.append(row)
+    if options.end_trans_col and end_transaction and last_row:
+        output_array.append(last_row)
     if not output_array:
         return ''
+    if options.end_trans_col and end_transaction and options.end_trans_col in output_array[-1]:
+        output_array[-1][options.end_trans_col] = '1'
     return json.dumps(output_array)
 
 ##### Main function ############################################################
@@ -713,16 +742,16 @@ def hub_filename_map():
 
     return hub_map
 
-def contents_of_integ_file(file_name):
+def contents_of_integ_file(file_name, end_trans):
     content = None
     with open(file_name, encoding="utf8") as file_fd:
         content = file_fd.read()
     trace(2, "File ({} bytes) {}", len(content), file_name)
     trace(3, "   content: {}", content)
-    if options.collapse_befores and options.mode == "integ_end":
+    if options.process_json_files:
         # reformat the file content
         len_b4 = len(content)
-        content = collapse_before_after(content, options.op_type_col, options.before_prefix, options.collapse_befores)
+        content = process_row_data(content, end_trans)
         if len(content) > options.maximum_message_size:
             raise AgentError( ("File {} ({} bytes), after update processing is {} bytes. Cannot send because of maximum message "
                            "limit {}. Adjust Integrate /MaxFileSize to something lower.".format(file_name, len_b4, len(content), options.maximum_message_size)))
@@ -852,17 +881,15 @@ def send_batch(producer, start, files, txids=[], asked_partitionid = None):
         event_data_batch = producer.create_batch(max_size_in_bytes=options.maximum_message_size)
     newstart = len(files)
     for i in range(start, len(files)):
+        if options.mode == "integ_end":
+            end_trans = (i == len(txids) - 1 or (i < len(txids) - 1 and txids[i] != txids[i+1]))
+        else:
+            end_trans = (i == len(files) - 1)
         full_name = options.file_path + '/' + files[i]
-        file_as_string = contents_of_integ_file(full_name)
+        file_as_string = contents_of_integ_file(full_name, end_trans)
         if not file_as_string:
             continue
         event = EventData(file_as_string)
-        if txids:
-            end_trans = 'false'
-            if i == len(txids) - 1 or (i < len(txids) - 1 and txids[i] != txids[i+1]):
-                end_trans = 'true'
-            event.properties = {"transaction_end": end_trans}
-            trace(2, "File {}, partition_id={}, end_transation={}".format(files[i], asked_partitionid, end_trans))
         if add_event_to_batch(event_data_batch, event):
             bytes_in_files += len(file_as_string)
             journal_batch(producer, asked_partitionid, file_as_string)
