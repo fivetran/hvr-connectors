@@ -356,7 +356,7 @@ def trace_input():
     else:
         trace(3, "File format: '{}'".format(options.file_format))
     trace(3, "Create/recreate target table(s) during refresh is {1}".format(options.target_is_timekey, options.recreate_tables_on_refresh))
-    trace(3, "Auto Optimize when table is created {}".format(options.auto_optimize))
+    trace(3, "Auto Optimize target table {}".format(options.auto_optimize))
     if options.burst_table_set_of_files == None:
         set_to = 'AUTO'
     elif options.burst_table_set_of_files:
@@ -1468,7 +1468,7 @@ def optimize_table(base_name):
             trace(3, "  {} {}".format(prop[0], prop[1]))
     except pyodbc.Error as ex:
         print("Show SQL failed: {1}".format(sql_stmt))
-        raise ex
+        return
     if optimized_props == 2:
         return
     alter_sql = "ALTER TABLE {} SET TBLPROPERTIES (delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true)".format(base_name)
@@ -1666,9 +1666,10 @@ def process_table(tab_entry, file_list, numrows):
                 # pass the HVR table name - the repository will provide the base_name
                 recreate_target_table(tab_entry[1])
             else:
-                optimize_table(target_table)
                 if options.truncate_target_on_refresh:
                     truncate_table(target_table)
+                if options.auto_optimize:
+                    optimize_table(target_table)
     t[1] = timer()
 
     if not use_burst_logic or not options.burst_table_set_of_files:
