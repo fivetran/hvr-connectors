@@ -158,6 +158,7 @@
 #     05/26/2021 RLR: Throw error if create-table-on-refresh set and running under python2
 #                     Added print_raw method
 #     05/28/2021 RLR: Get the ODBC connect timeout from an Environment variable
+#     06/01/2021 RLR: Alter table set tblproperties during refresh if not set
 #
 ################################################################################
 import sys
@@ -1444,10 +1445,35 @@ def get_col_types(base_name, columns):
             if len(col) > 1 and colname in hvr_columns:
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
-        print("{0} SQL failed: {1}".format(sql_name, sql_stmt))
+        print("Desc SQL failed: {1}".format(sql_stmt))
         raise ex
     trace(2, "Column types: {}".format(col_types))
     return hvr_columns, col_types
+
+def optimize_table(base_name):
+    sql_stmt = "SHOW TBLPROPERTIES {0}".format(base_name)
+    trace(1, "Show tblproperties " + base_name)
+    trace(2, "Execute: {0}".format(sql_stmt))
+    optimized_props = 0
+    try:
+        Connections.cursor.execute(sql_stmt)
+        while True:
+            prop = Connections.cursor.fetchone()
+            if not prop:
+                break
+            if prop[0] == 'delta.autoOptimize.optimizeWrite' and prop[1].lower() == 'true':
+                optimized_props += 1
+            if prop[0] == 'delta.autoOptimize.autoCompact' and prop[1].lower() == 'true':
+                optimized_props += 1
+            trace(3, "  {} {}".format(prop[0], prop[1]))
+    except pyodbc.Error as ex:
+        print("Show SQL failed: {1}".format(sql_stmt))
+        raise ex
+    if optimized_props == 2:
+        return
+    alter_sql = "ALTER TABLE {} SET TBLPROPERTIES (delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true)".format(base_name)
+    trace(1, "Enable auto optimize on {}".format(base_name))
+    execute_sql(alter_sql, 'Alter')
 
 def get_create_table_ddl(hvr_table, target_name):
     columns = target_columns(hvr_table)
@@ -1637,9 +1663,12 @@ def process_table(tab_entry, file_list, numrows):
     else:
         if options.mode == "refr_write_end":
             if options.recreate_tables_on_refresh:
+                # pass the HVR table name - the repository will provide the base_name
                 recreate_target_table(tab_entry[1])
-            elif options.truncate_target_on_refresh:
-                truncate_table(target_table)
+            else:
+                optimize_table(target_table)
+                if options.truncate_target_on_refresh:
+                    truncate_table(target_table)
     t[1] = timer()
 
     if not use_burst_logic or not options.burst_table_set_of_files:
