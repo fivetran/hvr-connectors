@@ -159,6 +159,7 @@
 #                     Added print_raw method
 #     05/28/2021 RLR: Get the ODBC connect timeout from an Environment variable
 #     06/01/2021 RLR: Alter table set tblproperties during refresh if not set
+#     06/02/2021 RLR: Support ADLS gen2
 #
 ################################################################################
 import sys
@@ -176,6 +177,7 @@ from timeit import default_timer as timer
 class FileStore:
     AWS_BUCKET  = 0
     AZURE_BLOB  = 1
+    ADLS_G2     = 2
 
 class Options:
     hvr_home = ''
@@ -220,7 +222,7 @@ class Connections:
     cursor = None
     s3_client = None
     s3_resource = None
-    azblob_service = None
+    azstore_service = None
 
 file_counter = 0
 
@@ -323,6 +325,9 @@ def env_load():
         if file_loc[:6] == 'wasbs:':
             options.filestore = FileStore.AZURE_BLOB
             options.url = file_loc
+        if file_loc[:6] == 'abfss:':
+            options.filestore = FileStore.ADLS_G2
+            options.url = file_loc
         ind = file_loc.find("@")
         if ind > 0:
             if options.filestore == FileStore.AWS_BUCKET:
@@ -347,16 +352,16 @@ def trace_input():
     trace(3, "============================================")
     trace(3, "Resource: {0}; Bucket/container: {1}, Root folder: {2}".format(options.resource, options.container, options.directory))
     if options.connect_timeout:
-        trace(3, "Connection tineout = {}".format(options.connect_timeout))
+        trace(3, "Connection timeout = {}".format(options.connect_timeout))
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
     trace(3, "Isdeleted column is {}; column exists on target = {}".format(options.isdeleted, (not options.no_isdeleted_on_target)))
-    trace(3, "Target is timekey {}".format(options.target_is_timekey))
+    trace(3, "Target is timekey = {}".format(options.target_is_timekey))
     if options.file_format == 'csv':
         trace(3, "File format options: format = '{}' delimiter = '{}'  line separator = '{}'".format(options.file_format, options.delimiter, options.line_separator))
     else:
-        trace(3, "File format: '{}'".format(options.file_format))
-    trace(3, "Create/recreate target table(s) during refresh is {1}".format(options.target_is_timekey, options.recreate_tables_on_refresh))
-    trace(3, "Auto Optimize target table {}".format(options.auto_optimize))
+        trace(3, "File format = '{}'".format(options.file_format))
+    trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
+    trace(3, "Auto Optimize target table during refresh = {}".format(options.auto_optimize))
     if options.burst_table_set_of_files == None:
         set_to = 'AUTO'
     elif options.burst_table_set_of_files:
@@ -366,7 +371,7 @@ def trace_input():
     trace(3, "Create burst as unmanaged table = '{}'".format(set_to))
 
     if not options.recreate_tables_on_refresh:
-        trace(3, "Preserve data during refresh is {}".format(not options.truncate_target_on_refresh))
+        trace(3, "Preserve data during refresh = {}".format(not options.truncate_target_on_refresh))
     if options.disable_filestore_actions:
         trace(3, "Filestore operations disabled")
     trace(3, "============================================")
@@ -1256,7 +1261,7 @@ def get_azblob_handles():
     trace(4, "Get handle to Azure BlobStore: BlobServiceClient(account_url={0}, credential={1}".format(url, options.secret_key))
     try:
         from azure.storage.blob import BlobServiceClient
-        Connections.azblob_service = BlobServiceClient(account_url=url, credential=options.secret_key)
+        Connections.azstore_service = BlobServiceClient(account_url=url, credential=options.secret_key)
     except Exception as ex:
         print("Failed getting a service handle using {}".format(url))
         raise ex
@@ -1265,9 +1270,9 @@ def files_in_azblob(folder, file_list):
     files_in_list = 0
     files_not_in_list = 0
     client = None
-    trace(4, "Get container client: Connections.azblob_service.get_container_client({})".format(options.container))
+    trace(4, "Get container client: Connections.azstore_service.get_container_client({})".format(options.container))
     try:
-        client = Connections.azblob_service.get_container_client(options.container)
+        client = Connections.azstore_service.get_container_client(options.container)
     except Exception as ex:
         print("Failed getting container client for {}".format(options.container))
         raise ex
@@ -1290,9 +1295,9 @@ def files_in_azblob(folder, file_list):
 
 def delete_files_from_azblob(file_list):
     client = None
-    trace(4, "Get container client: Connections.azblob_service.get_container_client({})".format(options.container))
+    trace(4, "Get container client: Connections.azstore_service.get_container_client({})".format(options.container))
     try:
-        client = Connections.azblob_service.get_container_client(options.container)
+        client = Connections.azstore_service.get_container_client(options.container)
     except Exception as ex:
         print("Failed getting container client for {}".format(options.container))
         raise ex
@@ -1305,15 +1310,76 @@ def delete_files_from_azblob(file_list):
         raise ex
 
 #
+# Functions that interact with the Azure ADLS G2 where integrate put the files
+#
+def get_azdfs_handles():
+    url = "https://{0}.dfs.core.windows.net/".format(options.resource)
+    trace(4, "Get handle to Azure ADLS fs: DataLakeServiceClient(account_url={0}, credential={1}".format(url, options.secret_key))
+    try:
+        from azure.storage.filedatalake import DataLakeServiceClient
+        Connections.azstore_service = DataLakeServiceClient(account_url=url, credential=options.secret_key)
+    except Exception as ex:
+        print("Failed getting a service handle using {}".format(url))
+        raise ex
+
+def files_in_azdfs(folder, file_list):
+    files_in_list = 0
+    files_not_in_list = 0
+    client = None
+    trace(4, "Get container client: Connections.azstore_service.get_file_system_client({})".format(options.container))
+    try:
+        client = Connections.azstore_service.get_file_system_client(options.container)
+    except Exception as ex:
+        print("Failed getting container client for {}".format(options.container))
+        raise ex
+
+    trace(4, "List files: client.get_paths(), filter by {}".format(folder))
+    try:
+        path_list = client.get_paths()
+    except Exception as ex:
+        print("Failed getting list of files in {0}/{1}".format(options.container, folder))
+        raise ex
+
+    for file_path in path_list:
+        if folder:
+            if file_path.name == folder or not file_path.name.startswith(folder):
+                continue
+        trace(3, "  {}".format(file_path.name))
+        if file_path.name in file_list:
+            files_in_list += 1
+        else:
+            files_not_in_list += 1
+
+    return files_in_list,files_not_in_list
+
+def delete_files_from_azdfs(file_list):
+    client = None
+    trace(4, "Get container client: Connections.azstore_service.get_file_system_client({})".format(options.container))
+    try:
+        client = Connections.azstore_service.get_file_system_client(options.container)
+    except Exception as ex:
+        print("Failed getting container client for {}".format(options.container))
+        raise ex
+
+    trace(4, "Delete from client: client.delete_file({})".format(file_list))
+    try:
+        client.delete_file(*file_list)
+    except Exception as ex:
+        print("Failed deleting file {}".format(file_list))
+        raise ex
+
+#
 # Functions that interact with file store where integrate put the files
 #
 def get_filestore_handles():
     if options.disable_filestore_actions:
         return
-    if options.filestore == FileStore.AWS_BUCKET:
-        get_s3_handles()
-    else:
+    if options.filestore == FileStore.ADLS_G2:
+        get_azdfs_handles()
+    elif options.filestore == FileStore.AZURE_BLOB:
         get_azblob_handles()
+    else:
+        get_s3_handles()
 
 def files_found_in_filestore(table, file_list):
     if options.disable_filestore_actions:
@@ -1327,10 +1393,12 @@ def files_found_in_filestore(table, file_list):
     options.folder = folder
     trace(1, "Verify files for '{0}' in '{1}', folder '{2}'".format(table, options.container, options.folder))
 
-    if options.filestore == FileStore.AWS_BUCKET:
-        files_in_list,files_not_in_list = files_in_s3(options.folder, file_list)
-    else:
+    if options.filestore == FileStore.ADLS_G2:
+        files_in_list,files_not_in_list = files_in_azdfs(options.folder, file_list)
+    elif options.filestore == FileStore.AZURE_BLOB:
         files_in_list,files_not_in_list = files_in_azblob(options.folder, file_list)
+    else:
+        files_in_list,files_not_in_list = files_in_s3(options.folder, file_list)
 
     trace(3, "File check: files_in_list = {}; files_not_in_list = {}".format(files_in_list,files_not_in_list))
     if files_in_list == 0:
@@ -1359,13 +1427,15 @@ def delete_files_from_filestore(file_list):
     if options.disable_filestore_actions:
         return
     trace(1, "Delete files from {0}".format(options.container))
-    if options.filestore == FileStore.AWS_BUCKET:
-        delete_files_from_s3(file_list)
-    else:
+    if options.filestore == FileStore.ADLS_G2:
+        delete_files_from_azdfs(file_list)
+    elif options.filestore == FileStore.AZURE_BLOB:
         delete_files_from_azblob(file_list)
+    else:
+        delete_files_from_s3(file_list)
 
 #
-# ODBC functions ineracting with Databricks
+# ODBC functions interacting with Databricks
 #
 def get_databricks_handles():
     if options.connect_string:
@@ -1585,6 +1655,8 @@ def define_burst_table(stage_table, target_table, columns, file_list):
     stage_sql += ") using {} ".format(options.file_format)
     if options.filestore == FileStore.AZURE_BLOB:
         stage_sql += " LOCATION 'wasbs://{0}@{1}.blob.core.windows.net/{2}'".format(options.container, options.resource, options.folder)
+    elif options.filestore == FileStore.ADLS_G2:
+        stage_sql += " LOCATION 'wasbs://{0}@{1}.blob.core.windows.net/{2}'".format(options.container, options.resource, options.folder)
     else:
         stage_sql += " LOCATION 's3://{0}/{1}' ".format(options.container, options.folder)
     if options.file_format == 'csv':
@@ -1611,6 +1683,8 @@ def copy_into_delta_table(load_table, target_table, columns, file_list):
             copy_sql += "{0},".format(col)
     copy_sql = copy_sql[:-1]
     if options.filestore == FileStore.AZURE_BLOB:
+        copy_sql += " FROM 'wasbs://{0}@{1}.blob.core.windows.net/') ".format(options.container, options.resource)
+    elif options.filestore == FileStore.ADLS_G2:
         copy_sql += " FROM 'wasbs://{0}@{1}.blob.core.windows.net/') ".format(options.container, options.resource)
     else:
         copy_sql += " FROM 's3://{0}') ".format(options.container)
