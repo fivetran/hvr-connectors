@@ -23,7 +23,7 @@ The following options are available with this connector:
 - The Simba Spark ODBC driver from Databricks downloaded and installed on the Integrate machine
 - If Linux:
   - unixODBC downloaded and installed
-  - Python pyodbc package downloaded and installed
+- Python pyodbc package downloaded and installed
 - A DSN configured to connect to Databricks (see Databricks documentation)
 - For Databricks hosted by Azure:
   - Python azure-storage-blob package downloaded and installed
