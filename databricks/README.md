@@ -146,6 +146,7 @@ SoftDelete column, and that it should be preserved, use the "-D" option in the A
 A sample configuration for SoftDelete follows:
 
     AgentPlugin /Command=hvrdatabricksagent.py /UserArgument="-D is_deleted"
+    ColumnProperties /Name=op_type /Extra /IntegrateExpression={hvr_op} /Datatype=integer /Context=!refresh
     ColumnProperties /Name=is_deleted /Extra /SoftDelete /Datatype=integer
     Environment /Name=HVR_DBRK_FILESTORE_KEY /Value=“jkhkgkjhkjh="
     Environment /Name=HVR_DBRK_DSN /Value=azuredbrk
@@ -155,7 +156,7 @@ A sample configuration for SoftDelete follows:
 ## Refresh Create/Recreate target table
 The connector can be configured to create/recreate the target table when refresh is run.  The requirements are:
 - Integrate runs on the hub
-- Python 3
+- The connector is running under Python 3
 - The AgentPlugin action that defines the Databricks connector has “-r” in the UserArguments. For example:  
        AgentPlugin /Command=hvrdatabricksagent.py /UserArgument=”-r” /Context=”refresh”
 - The repository connection string is provided to the Agent Plugin via the HVR_DBRK_HVRCONNECT Environment action.
