@@ -3,11 +3,11 @@
 This python script can be used to merge CDC changes and/or refresh a Databricks Delta table.  The script uses
 ODBC to connect to Databricks and apply the changes.  Databricks hosted on Azure and AWS are supported.   
 
-To support this connector the target location is Azure Blob storage, or an S3 bucket.  A FileFormat action
-is configured for Csv with /HeaderLine (default), or Avro, Parquet, Json.  The Databricks cluster that is the 
-target for this connector must be configured with access to the Azure Blob storage or S3 bucket.
+To support this connector the target location is Azure Blob storage, Azure ADLS Gen2, or an S3 bucket.  A FileFormat
+action is configured for Csv with /HeaderLine (default), or Avro, Parquet, Json.  The Databricks cluster that is the 
+target for this connector must be configured with access to the Azure storage or S3 bucket.
 
-Integrate/Refresh writes table changes to the integrate location (Blob store or S3 bucket) as files in the
+Integrate/Refresh writes table changes to the integrate location (Blob/ADLS store or S3 bucket) as files in the
 format defined by the FileFormat action.  This connector connects to the cluster via ODBC and using SQL
 statements loads and/or merges the data from the integrate location into the target table.
 
@@ -25,10 +25,15 @@ The following options are available with this connector:
   - unixODBC downloaded and installed
 - Python pyodbc package downloaded and installed
 - A DSN configured to connect to Databricks (see Databricks documentation)
-- For Databricks hosted by Azure:
+- For Databricks hosted by Azure, using Blob storage:
   - Python azure-storage-blob package downloaded and installed
   - An Azure Blob Storage account & container - Integrate will land files here
   - The Databricks cluster configured to be able to access the Azure Blob Storage
+- For Databricks hosted by Azure, using ADLS Gen2:
+  - Python azure-storage-file-datalake package downloaded and installed
+  - An Azure ADLS Gen2 account & container - Integrate will land files here
+  - The Databricks cluster configured to be able to access the ADLS Gen2 storage 
+  - An Access Key (regardless of authentication method) so the connector can manage the files
 - For Databricks hosted by AWS:
   - Python boto3 package downloaded and installed
   - An S3 bucket - Integrate will land files here
@@ -71,7 +76,7 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 |   -p   | Set this option on a refresh of a TimeKey target if it is desired that the target is not truncated before the refresh. |
 |   -r   | Set this option to instruct the script to create/recreate the target table during Refresh |
 |   -t   | Set this option if the target is TimeKey.   Same as using the Environment action HVR_DBRK_TIMEKEY=ON |
-|   -y   | If set the script will NOT delete the files on S3 or Blob store after they have been applied to the target |
+|   -y   | If set the script will NOT delete the files on S3 or Azure store after they have been applied to the target |
 
 ## File Format
 By default the script works with CSV files that have a header line.  Since there is no schema component to a CSV file, and 
