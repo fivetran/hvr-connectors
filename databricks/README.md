@@ -63,6 +63,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
 | HVR_DBRK_EXTERNAL_LOC      |     No    | The location for the unmanaged target table if create-on-refresh is configured |
 | HVR_DBRK_UNMANAGED_BURST   |     No    | Create the burst table unmanaged ('ON'), or managed ('OFF') |
+| HVR_DBRK_HVRCONNECT        |     No    | Provides the credentials for the script to connect to the repository |
 
 ## UserArgument options
 The following options may be set in the /UserArguments of the AgentPlugin action for hvrdatabricksagent.py
