@@ -160,6 +160,7 @@
 #     05/28/2021 RLR: Get the ODBC connect timeout from an Environment variable
 #     06/01/2021 RLR: Alter table set tblproperties during refresh if not set
 #     06/02/2021 RLR: Support ADLS gen2
+#     06/11/2021 RLR: Changes to support create/recreate Refresh with HVR 6
 #
 ################################################################################
 import sys
@@ -181,6 +182,8 @@ class FileStore:
 
 class Options:
     hvr_home = ''
+    hvr_6 = False
+    hub = ''
     mode = ''
     channel = ''
     location = ''
@@ -192,6 +195,7 @@ class Options:
     dsn = None
     connect_string = None
     connect_timeout = 0
+    channel_export = ''
     hvr_opts = []
     url = ''
     resource = ''
@@ -252,6 +256,13 @@ def version_check():
 
     python3 = sys.version_info[0] == 3
     
+def check_hvr6():
+    loginpath = os.path.join(options.hvr_home, "bin")
+    loginpath = os.path.join(loginpath, "hvrlogin")
+    if os.path.exists(loginpath):
+        return True
+    return False
+
 def print_raw(_msg, tgt= None):
     _msg= re.sub(r'!\{[^}]*\}!', '!{xxxxxxxx}!', _msg)
 
@@ -391,6 +402,11 @@ def process_args(argv):
     options.channel= argv[2]
     options.location= argv[3]
 
+    options.hvr_home = os.getenv('HVR_HOME', '')
+    if not options.hvr_home:
+        raise Exception("$HVR_HOME must be defined")
+    options.hvr_6 = check_hvr6()
+
     cmdargs = argv[4]
     if len(cmdargs):
         try:
@@ -428,7 +444,7 @@ def process_args(argv):
     if int(os.getenv('HVR_DBRK_TRACE', options.trace)) > 2:
         print("{0} called with {1} {2} {3} {4}".format(argv[0], options.mode, options.channel, options.location, cmdargs))
 
-##### HVR functions ############################################################
+##### HVR 5 functions ############################################################
 
 HVR_ACTION_COLS= ['chn_name', 'grp_name', 'tbl_name', 'act_name', 'act_parameters']
 A_CHN= 0
@@ -515,6 +531,8 @@ def from_json(s, reason='<unknown>'):
                                "fragment for {0}: '{1}'").format(reason, s), e)
 
 def get_hub_name():
+    if options.hvr_6:
+        return 'Invalid call for HVR 5.x'
     split= hvr_split_line()
     hvr_script= '''
         Prototype $script "[-h class<str>] [-u user<str>] -- hub<str>" \\
@@ -529,6 +547,8 @@ def get_hub_name():
     return res[0]
 
 def get_table_basename(tablename):
+    if options.hvr_6:
+        return tablename
     split= hvr_split_line()
     hvr_script= '''
 
@@ -559,6 +579,8 @@ def get_table_basename(tablename):
     return res[0][0][0]
 
 def get_table_columns(tablename):
+    if options.hvr_6:
+        return []
     split= hvr_split_line()
     hvr_script= '''
         Set hvr_column_colnames {hvr_column_colnames}
@@ -770,6 +792,199 @@ def merge_action_with_config_action(actlist, config_actlist):
         config_actlist.append(convert_action_into_configaction(act))
     show_actions("combined", config_actlist)
     return config_actlist
+
+##### HVR 6 functions ############################################################
+
+def get_key_value(line):
+    key = value = ''
+    s1 = line.find('"')
+    if s1 >= 0:
+        s2 = line.find('"', s1+1)
+        if s1 >= 0 and s2 > s1:
+            key = line[s1+1:s2]
+            if line[s2+1] == ':':
+                value = line[s2+3:]
+                if value != "{" and value != "]":
+                    if value[-1] == ',':
+                        value = value[:-1]
+                    if value[0] == '"':
+                        value = value[1:-1]
+    else:
+        s1 = line.find('{')
+        if s1 >= 0:
+            value = line[s1:s1+1]
+        else:
+            s1 = line.find('}')
+            if s1 >= 0:
+                value = line[s1:s1+1]
+    return key, value
+
+def get_list(line):
+    retval = []
+    s1 = line.find('"')
+    while s1 >= 0 and s1 < len(line):
+        s2 = line.find('"', s1+1)
+        retval.append(line[s1+1:s2])
+        s1 = line.find('"', s2+1)
+    return retval
+
+def temp_export_file_name():
+    hvr_config = os.getenv('HVR_CONFIG', '')
+    if not hvr_config:
+        raise Exception("$HVR_CONFIG must be defined")
+    tempname = "{0}_{1}_{2}.export.json".format(str(time.time()), options.hub, options.channel)
+    tempexpfile = os.path.join(hvr_config, "tmp")
+    tempexpfile = os.path.join(tempexpfile, tempname)
+    return tempexpfile
+
+def get_channel_export():
+    tempexpfile = temp_export_file_name()
+    cmd = []
+    cmd.append("hvrdefinitionexport")
+    cmd.append("-c{}".format(options.channel))
+    for opt in options.hvr_opts:
+        cmd.append(opt)
+    cmd.append(tempexpfile)
+    trace(2, "{}".format(cmd))
+    try:
+        rval = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        if options.trace >= 2 and len(rval):
+            print("return from run command: {}".format(rval))
+    except subprocess.CalledProcessError as e:
+        if options.trace >= 2:
+            print("{}".format(str(e)))
+        raise Exception("Error getting channel export")
+    return tempexpfile
+
+class Options:
+    NONE = 0
+    CHANNEL = 1
+    TABLE = 2
+    COLUMN = 3
+
+class ChannelInfo:
+    GENERAL = 0
+    TABLES = 1
+    COLUMN = 2
+    LOCATION_GROUPS = 3
+    ACTIONS = 4
+
+def hvr6_init_createtable_info():
+    global g_table_props
+    global g_column_props
+
+    g_table_props = []
+    g_column_props = []
+    channel = False
+    channelinfo = ChannelInfo.GENERAL
+    thisgroup = ''
+    grp_locations = {}
+    action = [options.channel, '', '', '', '', '']
+
+    with open(options.channel_export, "r") as f:
+        for line in f:
+            key, value = get_key_value(line[:-1])
+            if not key:
+                if channelinfo == ChannelInfo.ACTIONS:
+                    if action[C_GRP] == options.location:
+                        action[C_LOC] = options.location
+                        action[C_GRP] = ''
+                    elif options.locgroup != '*' and options.locgroup != action[C_GRP]:
+                        continue
+                    if action[C_ACT] == 'TableProperties':
+                        g_table_props.append(action)
+                    if action[C_ACT] == 'ColumnProperties':
+                        g_column_props.append(action)
+                    action = [options.channel, '', '', '', '', '']
+                continue;
+            if channel and channelinfo == ChannelInfo.LOCATION_GROUPS:
+                if not thisgroup:
+                    thisgroup = key
+                elif key == "members":
+                    grp_locations[thisgroup] = get_list(value)
+                    thisgroup = ''
+            if channel and key == "loc_groups":
+                channelinfo = ChannelInfo.LOCATION_GROUPS
+                thisgroup = ''
+            if channel and channelinfo == ChannelInfo.ACTIONS:
+                if key == "type":
+                    action[C_ACT] = value
+                elif key == "loc_scope":
+                    action[C_GRP] = value
+                elif key == "table_scope":
+                    action[C_TBL] = value
+                elif key != "params" and value:
+                    action[C_PRM] = value
+            if channel and key == "actions":
+                channelinfo = ChannelInfo.ACTIONS
+                inactions = True
+                for grp,locs in grp_locations.items():
+                    if options.location in locs:
+                        if options.locgroup:
+                            options.locgroup = '*'
+                        else:
+                            options.locgroup = grp
+            if key == "channel":
+                channel = (value == options.channel)
+
+    print("grplocs: {}".format(grp_locations))
+    
+    show_actions("TableProperties", g_table_props)
+    show_actions("ColumnProperties", g_column_props)
+
+def hvr6_get_table_info(tablename):
+    channel = False
+    channelinfo = ChannelInfo.GENERAL
+    thistable = 0
+
+    targetname = get_target_basename(tablename)
+    target_columns = []
+    column = []
+    with open(options.channel_export, "r") as f:
+        for line in f:
+            key, value = get_key_value(line[:-1])
+            if thistable:
+                if value == '{':
+                    thistable = thistable + 1
+                elif value == '}':
+                    thistable = thistable - 1
+            if channel and key == "tables":
+                channelinfo = ChannelInfo.TABLES
+            if channel and key == "actions":
+                channelinfo = ChannelInfo.ACTIONS
+                thistable = 0
+            if channel and thistable:
+                if not targetname and key == "base_name":
+                    targetname = value
+                if thistable == 2 and column:
+                    target_columns.append(column)
+                    column = []
+                if not key:
+                    continue
+                if thistable == 3:
+                    if not column:
+                        column = [key, key, '0', '', '0', '0']
+                    else:
+                        if key == "data_type":
+                            column[3] = value
+                        if key == "key":
+                            column[2] = value
+                if thistable == 4:
+                    if key == "bytelen":
+                        column[4] = value
+                    if key == "charlen":
+                        charlen = column[4]
+                        if charlen:
+                            charlen += ','
+                        charlen += value
+                        column[4] = charlen
+                    if key == "nullable" and value == "true":
+                        column[5] = '1'
+            if channel and channelinfo == ChannelInfo.TABLES and key == tablename:
+                thistable = 1
+            if key == "channel":
+                channel = (value == options.channel)
+    return targetname, target_columns
 
 #### Create table ###############################################################
 
@@ -1005,15 +1220,21 @@ def show_columns(columns):
         for col in columns:
             print("   {}".format(col))
 
-def get_target_tablename(table):
+def get_target_basename(table):
     for prop in g_table_props:
         if prop[C_TBL] == table:
             basename = get_property(prop[C_PRM], '/BaseName')
             if basename:
                 return basename
+    return ''
+
+def get_target_tablename(table):
+    basename = get_target_basename(table)
+    if basename:
+        return basename
     return get_table_basename(table)
 
-def init_createtable_info():
+def hvr5_init_createtable_info():
     global g_table_props
     global g_column_props
 
@@ -1032,14 +1253,18 @@ def init_createtable_info():
     g_column_props = get_column_properties()
     show_actions("ColumnProperties", g_column_props)
     
+def init_createtable_info():
+    trace(2, "init_createtable_info")
+    if options.hvr_6:
+        hvr6_init_createtable_info()
+    else:
+        hvr5_init_createtable_info()
+
 def initialize_hvr_connect():
     import base64
 
     if not python3:
         raise Exception("Create-table-on-refresh ('-r' option) requires Python 3")
-    options.hvr_home = os.getenv('HVR_HOME', '')
-    if not options.hvr_home:
-        raise Exception("$HVR_HOME must be defined")
     hvr_connect = os.getenv('HVR_DBRK_HVRCONNECT', '')
     if not hvr_connect:
         raise Exception("HVR connection string required for 'create on refresh' option'")
@@ -1066,7 +1291,7 @@ def initialize_hvr_connect():
          if not args[a].startswith('-'):
              break
          opt = args[a][1]
-         if opt != 'h' and opt != 'u':
+         if not options.hvr_6 and opt != 'h' and opt != 'u':
              print("Invalid option {} found as part of the Hub login options", args[a])
              options.hvr_opts = []
              return
@@ -1077,9 +1302,15 @@ def initialize_hvr_connect():
              options.hvr_opts.append(args[a])
          a = a + 1
     options.hvr_opts.append(args[a])
-    trace(4, "HVR connect using = {}".format(options.hvr_opts))
-    hubname = get_hub_name()
-    trace(2, "Connection to HVR valid, hubdb = {}".format(hubname))
+    if not options.hvr_6:
+        trace(4, "HVR connect using = {}".format(options.hvr_opts))
+        hubname = get_hub_name()
+        trace(2, "Connection to HVR valid, hubdb = {}".format(hubname))
+    else:
+        options.hub = options.hvr_opts[-1]
+        trace(2, "Connection to HVR valid, hubdb = {}".format(options.hvr_opts[-1]))
+        options.channel_export = get_channel_export()
+        trace(3, "Channel export: {}".format(options.channel_export))
 
 ##### Main function ############################################################
 
@@ -1545,8 +1776,7 @@ def optimize_table(base_name):
     trace(1, "Enable auto optimize on {}".format(base_name))
     execute_sql(alter_sql, 'Alter')
 
-def get_create_table_ddl(hvr_table, target_name):
-    columns = target_columns(hvr_table)
+def get_create_table_ddl(hvr_table, target_name, columns):
     if not columns:
         raise Exception("No columns found in the repository for table {}".format(hvr_table))
     show_columns(columns)
@@ -1559,8 +1789,12 @@ def get_create_table_ddl(hvr_table, target_name):
 
 def recreate_target_table(hvr_table):
     #  get the create table DDL - only drop when successful
-    target_name = get_target_tablename(hvr_table)
-    create_sql = get_create_table_ddl(hvr_table, target_name)
+    if options.hvr_6:
+        target_name, columns = hvr6_get_table_info(hvr_table)
+    else:
+        target_name = get_target_tablename(hvr_table)
+        columns = target_columns(hvr_table)
+    create_sql = get_create_table_ddl(hvr_table, target_name, columns)
     drop_table(target_name)
     trace(1, "Creating table " + target_name)
     execute_sql(create_sql, 'Create')
@@ -1810,6 +2044,9 @@ def process(argv):
 
         if (file_counter > 0) :
             print("Successfully processed {0:d} file(s)".format(file_counter))
+
+    if options.channel_export:
+        os.remove(options.channel_export)
 
 if __name__ == "__main__":
     try:
