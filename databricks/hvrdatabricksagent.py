@@ -161,6 +161,7 @@
 #     06/01/2021 RLR: Alter table set tblproperties during refresh if not set
 #     06/02/2021 RLR: Support ADLS gen2
 #     06/11/2021 RLR: Changes to support create/recreate Refresh with HVR 6
+#     06/14/2021 RLR: Changes to support create/recreate Refresh with HVR 6
 #
 ################################################################################
 import sys
@@ -459,7 +460,8 @@ C_GRP= 1
 C_TBL= 2
 C_LOC= 3
 C_ACT= 4
-C_PRM= 5
+C_PSTR= 5
+C_PRM= 6
 
 HVR_COLUMN_COLS= ['chn_name', 'tbl_name', 'col_sequence', 'col_name', 'col_key', 'col_datatype', 'col_length', 'col_nullable']
 
@@ -707,7 +709,10 @@ def get_config_table_prop_actions():
     return table_props
     
 def get_table_properties():
-    return merge_action_with_config_action(get_table_prop_actions(), get_config_table_prop_actions())
+    tbl_props = merge_action_with_config_action(get_table_prop_actions(), get_config_table_prop_actions())
+    for prop in tbl_props:
+        prop.append(param_str_to_dict(prop[C_PSTR]))
+    return tbl_props
     
 def get_column_prop_actions():
     split= hvr_split_line()
@@ -780,7 +785,10 @@ def get_config_column_prop_actions():
     return column_props
     
 def get_column_properties():
-    return merge_action_with_config_action(get_column_prop_actions(), get_config_column_prop_actions())
+    col_props = merge_action_with_config_action(get_column_prop_actions(), get_config_column_prop_actions())
+    for prop in col_props:
+        prop.append(param_str_to_dict(prop[C_PSTR]))
+    return col_props
     
 def convert_action_into_configaction(act):
     return [act[0], act[1], act[2], '*', act[3], act[4]]
@@ -879,7 +887,7 @@ def hvr6_init_createtable_info():
     channelinfo = ChannelInfo.GENERAL
     thisgroup = ''
     grp_locations = {}
-    action = [options.channel, '', '', '', '', '']
+    action = [options.channel, '', '', '', '', '', {}]
 
     with open(options.channel_export, "r") as f:
         for line in f:
@@ -889,13 +897,12 @@ def hvr6_init_createtable_info():
                     if action[C_GRP] == options.location:
                         action[C_LOC] = options.location
                         action[C_GRP] = ''
-                    elif options.locgroup != '*' and options.locgroup != action[C_GRP]:
-                        continue
-                    if action[C_ACT] == 'TableProperties':
-                        g_table_props.append(action)
-                    if action[C_ACT] == 'ColumnProperties':
-                        g_column_props.append(action)
-                    action = [options.channel, '', '', '', '', '']
+                    if options.location == action[C_LOC] or options.locgroup == '*' or options.locgroup == action[C_GRP]:
+                        if action[C_ACT] == 'TableProperties':
+                            g_table_props.append(action)
+                        if action[C_ACT] == 'ColumnProperties':
+                            g_column_props.append(action)
+                    action = [options.channel, '', '', '', '', '', {}]
                 continue;
             if channel and channelinfo == ChannelInfo.LOCATION_GROUPS:
                 if not thisgroup:
@@ -914,7 +921,7 @@ def hvr6_init_createtable_info():
                 elif key == "table_scope":
                     action[C_TBL] = value
                 elif key != "params" and value:
-                    action[C_PRM] = value
+                    action[C_PRM][key] = value
             if channel and key == "actions":
                 channelinfo = ChannelInfo.ACTIONS
                 inactions = True
@@ -1118,19 +1125,22 @@ def target_create_table(table, columns):
         create_sql += " TBLPROPERTIES (delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true)"
     return create_sql
 
-def get_property(act_param, prop_name):
-    pstart = act_param.find(prop_name)
-    if pstart >= 0:
-        pstart = pstart + len(prop_name) + 1
-        if act_param[pstart] == '"':
-            pstart = pstart + 1
-            pend = act_param.find('"', pstart)
-        else:
-            pend = act_param.find(' ', pstart)
-        if pend < 0:
-            return act_param[pstart:]
-        else:
-            return act_param[pstart:pend]
+def param_str_to_dict(param_str):
+    param_dict = {}
+    if param_str:
+        opts = param_str.split(' ')
+        for opt in opts:
+            option = opt[1:]
+            if not '=' in option:
+                param_dict[option] = ''
+            else:
+                sep = option.find('=')
+                param_dict[option[:sep]] = option[sep+1:]
+    return param_dict
+
+def get_property(params, prop_name):
+    if prop_name in params.keys():
+        return params[prop_name]
     return ''
 
 def target_columns(table):
@@ -1141,27 +1151,29 @@ def target_columns(table):
         target_cols.append([col[3], col[3], col[4], col[5], col[6], col[7]])
     return target_cols
 
-def remove_column(prop_values, columns):
-    colname = get_property(prop_values, '/Name')
+def remove_column(params, columns):
+    colname = get_property(params, 'Name')
+    trace(3, "Process Column properties, remove '{}'".format(colname))
     newlist = []
     for col in columns:
         if col[0] != colname:
             newlist.append(col)
     return newlist
             
-def add_column(prop_values, columns):
-    colname = get_property(prop_values, '/Name')
+def add_column(params, columns):
+    colname = get_property(params, 'Name')
+    trace(3, "Process Column properties, add '{}'".format(colname))
     if colname and options.isdeleted == colname and options.no_isdeleted_on_target:
         return
     if colname and options.optype == colname and options.no_optype_on_target:
         return
-    basename = get_property(prop_values, '/BaseName')
+    basename = get_property(params, 'BaseName')
     if not basename:
         basename = colname
-    dtype = get_property(prop_values, '/Datatype')
-    length = get_property(prop_values, '/Length')
-    precision = get_property(prop_values, '/Precision')
-    scale = get_property(prop_values, '/Scale')
+    dtype = get_property(params, 'Datatype')
+    length = get_property(params, 'Length')
+    precision = get_property(params, 'Precision')
+    scale = get_property(params, 'Scale')
     if precision:
         length = "{}".format(precision)
         if scale:
@@ -1169,43 +1181,48 @@ def add_column(prop_values, columns):
     if not length:
         length = '0'
     nullable = '0'
-    if '/Nullable' in prop_values:
+    if 'Nullable' in params.keys():
         nullable = '1'
     key = '0'
-    if '/Key' in prop_values:
+    if 'Key' in params.keys():
         key = '1'
     columns.append([colname, basename, key, dtype, length, nullable])
 
-def modify_column(prop_values, columns):
-    colname = get_property(prop_values, '/Name')
+def modify_column(params, columns):
+    colname = get_property(params, 'Name')
+    dtmatch = get_property(params, 'DatatypeMatch')
+    if colname:
+        trace(3, "Process Column properties, modify column '{}'".format(colname))
+    if dtmatch:
+        trace(3, "Process Column properties, match datatype '{}'".format(dtmatch))
     for col in columns:
-        if col[0] == colname:
-            if '/BaseName' in prop_values:
-                col[1] = get_property(prop_values, '/BaseName')
-            if '/Datatype' in prop_values:
-                col[3] = get_property(prop_values, '/Datatype')
+        if col[0] == colname or dtmatch == col[3]:
+            if 'BaseName' in params.keys():
+                col[1] = get_property(params, 'BaseName')
+            if 'Datatype' in params.keys():
+                col[3] = get_property(params, 'Datatype')
                 len_pre_scl = ''
-                if '/Precision' in prop_values:
-                    len_pre_scl = "{}".format(get_property(prop_values, '/Precision'))
-                    if '/Scale' in prop_values:
-                        len_pre_scl += ",{}".format(get_property(prop_values, '/Scale'))
-                elif '/Length' in prop_values:
-                    len_pre_scl = get_property(prop_values, '/Length')
+                if 'Precision' in params.keys():
+                    len_pre_scl = "{}".format(get_property(params, 'Precision'))
+                    if 'Scale' in params.keys():
+                        len_pre_scl += ",{}".format(get_property(params, 'Scale'))
+                elif 'Length' in params.keys():
+                    len_pre_scl = get_property(params, 'Length')
                 col[4] = len_pre_scl
-            if '/Nullable' in prop_values:
+            if 'Nullable' in params.keys():
                 col[5] = '1'
-            if '/Key' in prop_values:
+            if 'Key' in params.keys():
                 col[2] = '1'
             return
 
 def apply_column_property(table, prop, columns):
-    param = prop[C_PRM]
-    if '/Absent' in param:
-        columns = remove_column(param, columns)
-    elif '/Extra' in param:
-        add_column(param, columns)
+    params = prop[C_PRM]
+    if 'Absent' in params.keys():
+        columns = remove_column(params, columns)
+    elif 'Extra' in params.keys():
+        add_column(params, columns)
     else:
-        modify_column(param, columns)
+        modify_column(params, columns)
     
     return columns
 
@@ -1223,7 +1240,7 @@ def show_columns(columns):
 def get_target_basename(table):
     for prop in g_table_props:
         if prop[C_TBL] == table:
-            basename = get_property(prop[C_PRM], '/BaseName')
+            basename = get_property(prop[C_PRM], 'BaseName')
             if basename:
                 return basename
     return ''
@@ -1350,7 +1367,7 @@ def table_file_name_map():
 
     hvr_tbl_names = options.agent_env['HVR_TBL_NAMES'].split(":")
     hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
-    hvr_col_names = options.agent_env['HVR_COL_NAMES'].split(":")
+    hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
     hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
     files = options.agent_env.get('HVR_FILE_NAMES', None)
     rows = options.agent_env.get('HVR_FILE_NROWS', None)
