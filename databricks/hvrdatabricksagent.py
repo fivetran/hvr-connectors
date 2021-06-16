@@ -167,6 +167,7 @@
 #     06/11/2021 RLR: Changes to support create/recreate Refresh with HVR 6
 #     06/14/2021 RLR: Changes to support create/recreate Refresh with HVR 6
 #     06/15/2021 RLR: Add sleep after burst table has been created
+#                     Minor fixes to unmanaged burst table logic
 #
 ################################################################################
 import sys
@@ -215,7 +216,8 @@ class Options:
     delimiter = ','
     line_separator = ''
     load_burst_delay = None
-    burst_table_set_of_files = None
+    unmanaged_burst = 'Auto'
+    burst_table_set_of_files = False
     external_loc = ''
     auto_optimize = True
     multidelete_map = {}
@@ -325,8 +327,12 @@ def env_load():
             options.load_burst_delay = float(burst_delay)
         except Exception as err:
             print("Invalid value '{}' defined for HVR_DBRK_LOAD_BURST_DELAY; must be numeric".format(burst_delay))
-    if os.getenv('HVR_DBRK_UNMANAGED_BURST', ''):
-        options.burst_table_set_of_files = os.getenv('HVR_DBRK_UNMANAGED_BURST', '').upper() == 'ON'
+    unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
+    if unmanaged_burst:
+        if unmanaged_burst.upper() == 'ON':
+            options.unmanaged_burst = 'On'
+        else:
+            options.unmanaged_burst = 'Off'
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
@@ -386,13 +392,7 @@ def trace_input():
         trace(3, "File format = '{}'".format(options.file_format))
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
     trace(3, "Auto Optimize target table during refresh = {}".format(options.auto_optimize))
-    if options.burst_table_set_of_files == None:
-        set_to = 'AUTO'
-    elif options.burst_table_set_of_files:
-        set_to = 'ON'
-    else:
-        set_to = 'OFF'
-    trace(3, "Create burst as unmanaged table = '{}'".format(set_to))
+    trace(3, "Create burst as unmanaged table = '{}'".format(options.unmanaged_burst))
     if options.load_burst_delay:
         trace(3, "Delay {} seconds after creating the burst table, before loading it".format(options.load_burst_delay))
 
@@ -1670,11 +1670,13 @@ def files_found_in_filestore(table, file_list):
         raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(options.folder, table))
 
     # validate and/or set unmanaged burst table logic
-    if options.burst_table_set_of_files and files_not_in_list:
-        print("Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
-        options.burst_table_set_of_files = False
-    if options.burst_table_set_of_files == None:
-        options.burst_table_set_of_files = False
+    options.burst_table_set_of_files = False
+    if options.unmanaged_burst == 'On':
+        if files_not_in_list:
+            print("Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
+        else:
+            options.burst_table_set_of_files = True
+    if options.unmanaged_burst == 'Auto':
         # if table name is in the folder name, then assume that RenameExpression separates files into separate folders by tablename
         trace(3, "Table name '{}' in folder '{}' = {}".format(table, options.folder, table in options.folder))
         if table in options.folder:
