@@ -85,6 +85,10 @@
 #     HVR_DBRK_LINE_SEPARATOR    (optional)
 #        The value of /LineSeparator from the FileFormat action, if set
 #
+#     HVR_DBRK_LOAD_BURST_DELAY  (optional)
+#        If set, the number of seconds that the script will wait before loading
+#        the burst table after creating it.
+#
 #     HVR_DBRK_UNMANAGED_BURST   (optional)
 #        If not set, the script will determine whether it can use an unmanaged table for 
 #        the burst table.  If set to 'ON', use an unmanaged table for the burst table
@@ -162,6 +166,7 @@
 #     06/02/2021 RLR: Support ADLS gen2
 #     06/11/2021 RLR: Changes to support create/recreate Refresh with HVR 6
 #     06/14/2021 RLR: Changes to support create/recreate Refresh with HVR 6
+#     06/15/2021 RLR: Add sleep after burst table has been created
 #
 ################################################################################
 import sys
@@ -209,6 +214,7 @@ class Options:
     file_format = 'csv'
     delimiter = ','
     line_separator = ''
+    load_burst_delay = None
     burst_table_set_of_files = None
     external_loc = ''
     auto_optimize = True
@@ -313,6 +319,12 @@ def env_load():
     options.line_separator = os.getenv('HVR_DBRK_LINE_SEPARATOR', '')
     if len(options.line_separator) > 1:
         raise Exception("Invalid value {0} for {1}; must be one character".format(options.line_separator, 'HVR_DBRK_LINE_SEPARATOR'))
+    burst_delay = os.getenv('HVR_DBRK_LOAD_BURST_DELAY', '')
+    if burst_delay:
+        try:
+            options.load_burst_delay = float(burst_delay)
+        except Exception as err:
+            print("Invalid value '{}' defined for HVR_DBRK_LOAD_BURST_DELAY; must be numeric".format(burst_delay))
     if os.getenv('HVR_DBRK_UNMANAGED_BURST', ''):
         options.burst_table_set_of_files = os.getenv('HVR_DBRK_UNMANAGED_BURST', '').upper() == 'ON'
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
@@ -381,6 +393,8 @@ def trace_input():
     else:
         set_to = 'OFF'
     trace(3, "Create burst as unmanaged table = '{}'".format(set_to))
+    if options.load_burst_delay:
+        trace(3, "Delay {} seconds after creating the burst table, before loading it".format(options.load_burst_delay))
 
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh = {}".format(not options.truncate_target_on_refresh))
@@ -1743,6 +1757,8 @@ def create_burst_table(burst_table_name, base_name):
         alter_sql = 'ALTER TABLE {0} ADD COLUMN ({1})'.format(burst_table_name, cols)
         trace(1, "Altering table " + burst_table_name)
         execute_sql(alter_sql, 'Alter')
+    if options.load_burst_delay:
+        time.sleep(options.load_burst_delay)
 
 def get_col_types(base_name, columns):
     hvr_columns = []

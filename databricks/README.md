@@ -63,6 +63,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
 | HVR_DBRK_EXTERNAL_LOC      |     No    | The location for the unmanaged target table if create-on-refresh is configured |
 | HVR_DBRK_UNMANAGED_BURST   |     No    | Create the burst table unmanaged ('ON'), or managed ('OFF') |
+| HVR_DBRK_LOAD_BURST_DELAY  |     No    | Delay, in seconds, after creating the burst table and before loading |
 | HVR_DBRK_HVRCONNECT        |     No    | Provides the credentials for the script to connect to the repository |
 
 ## UserArgument options
