@@ -57,6 +57,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_FILESTORE_REGION  | AWS - No  | The region where the S3 bucket resides - for connecting to the target location |
 | HVR_DBRK_CONNECT_STRING    |     No    | Replaces HVR_DBRK_DSN if desired |
 | HVR_DBRK_CONNECT_TIMEOUT   |     No    | If set, the connection to the cluster will have the specified timeout (seconds) |
+| HVR_DBRK_DATABASE          |     No    | Specifies the target database, if not the default |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
 | HVR_DBRK_FILEFORMAT        |     No    | The file format configured in the FileFormat action if not CSV |
 | HVR_DBRK_DELIMITER         |     No    | The FieldSeparator in the FileFormat /Csv action if set |

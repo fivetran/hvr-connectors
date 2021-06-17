@@ -61,6 +61,9 @@
 #     HVR_DBRK_CONNECT_TIMEOUT   (optional)
 #        The time, in seconds, to set the timeout in the ODBC connect call.
 #
+#     HVR_DBRK_DATABASE          (optional)
+#        If set the script will apply all changes to this database. 
+#
 #     HVR_DBRK_FILESTORE_ID      (optional)
 #        The access ID for the S3 cloud storage
 #
@@ -168,6 +171,7 @@
 #     06/14/2021 RLR: Changes to support create/recreate Refresh with HVR 6
 #     06/15/2021 RLR: Add sleep after burst table has been created
 #                     Minor fixes to unmanaged burst table logic
+#     06/16/2021 RLR: Add option to specify database
 #
 ################################################################################
 import sys
@@ -202,6 +206,7 @@ class Options:
     dsn = None
     connect_string = None
     connect_timeout = 0
+    database = None
     channel_export = ''
     hvr_opts = []
     url = ''
@@ -347,6 +352,7 @@ def env_load():
             print("Invalid value '{}' defined for HVR_DBRK_CONNECT_TIMEOUT; must be integer".format(conn_timeout))
     if os.getenv('HVR_DBRK_TIMEKEY', '').upper() == 'ON':
         options.target_is_timekey = True
+    options.database = os.getenv('HVR_DBRK_DATABASE', '')
     options.agent_env = load_agent_env()
     get_multidelete_map()
 
@@ -383,6 +389,8 @@ def trace_input():
     trace(3, "Resource: {0}; Bucket/container: {1}, Root folder: {2}".format(options.resource, options.container, options.directory))
     if options.connect_timeout:
         trace(3, "Connection timeout = {}".format(options.connect_timeout))
+    if options.database:
+        trace(3, "Use database {}".format(options.database))
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
     trace(3, "Isdeleted column is {}; column exists on target = {}".format(options.isdeleted, (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey = {}".format(options.target_is_timekey))
@@ -1718,6 +1726,8 @@ def get_databricks_handles():
     except pyodbc.Error as ex:
         print("Failed to connect using connect string '{}'".format(connect_string))
         raise ex
+    if options.database:
+        set_database()
 
 def execute_sql(sql_stmt, sql_name):
     trace(2, "Execute: {0}".format(sql_stmt))
@@ -1733,6 +1743,11 @@ def execute_sql(sql_stmt, sql_name):
     except:
         print("Executing {0} SQL generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0])))
         raise
+
+def set_database():
+    set_sql = "USE {}".format(options.database)
+    trace(1, set_sql)
+    execute_sql(set_sql, 'Set')
 
 def truncate_table(table_name):
     trunc_sql = "TRUNCATE TABLE {0}".format(table_name)
