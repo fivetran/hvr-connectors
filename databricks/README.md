@@ -179,3 +179,7 @@ Note that the pathname specified by HVR_DBRK_EXTERNAL_LOC may contain {hvr_tbl_n
 perform the substitution.  For example:
        /Name=HVR_DBRK_EXTERNAL_LOC /Value="/mnt/delta/{hvr_tbl_name}"
 
+## Change Log
+| Version | Date     | Description |
+| ------- | -------- | ----------- |
+| 1.0     | 06/18/21 | First version - includes all changes up to this time as defined in the change log in hvrdatabricksagent.py |
