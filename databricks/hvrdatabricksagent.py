@@ -173,6 +173,8 @@
 #                     Minor fixes to unmanaged burst table logic
 #     06/16/2021 RLR: Add option to specify database
 #
+#     06/18/2021 RLR v1.0  Add versioning
+#
 ################################################################################
 import sys
 import traceback
@@ -185,6 +187,8 @@ import subprocess
 import json
 import pyodbc
 from timeit import default_timer as timer
+
+VERSION = "1.0"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -464,8 +468,14 @@ def process_args(argv):
             raise Exception("The '-p' and '-r' options cannot both be set")
         options.truncate_target_on_refresh = False
 
-    if int(os.getenv('HVR_DBRK_TRACE', options.trace)) > 2:
-        print("{0} called with {1} {2} {3} {4}".format(argv[0], options.mode, options.channel, options.location, cmdargs))
+    try:
+        trace = os.getenv('HVR_DBRK_TRACE', 0)
+        if trace:
+            print("{0}: VERSION {1}".format(argv[0], VERSION))
+        if trace > 2:
+            print("{0} called with {1} {2} {3} {4}".format(argv[0], options.mode, options.channel, options.location, cmdargs))
+    except:
+        pass
 
 ##### HVR 5 functions ############################################################
 
@@ -1747,7 +1757,7 @@ def execute_sql(sql_stmt, sql_name):
 def set_database():
     set_sql = "USE {}".format(options.database)
     trace(1, set_sql)
-    execute_sql(set_sql, 'Set')
+    execute_sql(set_sql, 'Use')
 
 def truncate_table(table_name):
     trunc_sql = "TRUNCATE TABLE {0}".format(table_name)
