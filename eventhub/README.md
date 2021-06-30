@@ -34,7 +34,7 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 | -d<colname>  | Mark end-of-transaciton - see "Transaction End Marker" |
 | -f<fail/ok>  | Fail or continue if integrate file does not exist - see "Recovery" |
 | -m<maxlen>   | Maximum message length. An EventHub message has an upper limit. If the integrate file exceeds <br>this length, it will be skipped. Default is 1046500 bytes. |
-| -o<opcol>    | Name of the /Extra column with /IntegrateExpression={hvr_op}. Applicable if collapse option <br>defined - documented below |
+| -o<opcol>    | Name of the /Extra column with /IntegrateExpression={hvr_op} - see "Collapse Updates" |
 | -t<#>        | Trace level (see HVR_EVENTHUB_TRACE) |
 
 ## EventHub Connection
@@ -49,12 +49,8 @@ If, for any reason, it is necessary to override this logic and provide the addre
 
 ## EventHub Name
 The name can be specified as a fixed value, or the name can be derived by the EventHub agent from values in the file name.  If the name is a fixed value, set HVR_EVENTHUB_NAME to that name.  Otherwise, set HVR_EVENTHUB_FILE_EXPR to the Integrate /RenameExpression for this channel.  Then set HVR_EVENTHUB_NAME_FORMAT to a string from which the connector can derive the EventHub name.   Note that the valid HVR substitution values for HVR_EVENTHUB_NAME_FORMAT are any of those used in the Integrate /RenameExpression and {hvr_chn_name} and {hvr_integ_loc}.
-For instance, it may be desirable to have an EventHub for each source table. For this to happen, the following must be configured:
-The Integrate action's /RenameExpression includes "{hvr_tbl_name}"
-- An environment action with Name=HVR_EVENTHUB_FILE_EXPR and Value=<contents of /RenameExpression from the Integrate action>
-- An environment action with Name=HVR_EVENTHUB_NAME_FORMAT and Value=<name with substitution variable>
 
-For example:
+For instance, it may be desirable to have an EventHub for each source table. For this to happen, the Integrate action's /RenameExpression must include "{hvr_tbl_name}".  For example:
    Integrate /RenameExpression="{hvr_tbl_name}/{hvr_integ_tstamp}.csv"
    Environment /Name=HVR_EVENTHUB_FILE_EXPR /Value="{hvr_tbl_name}/{hvr_integ_tstamp}.csv"
    Environment /Name=HVR_EVENTHUB_NAME_FORMAT /Value=sypd_{hvr_tbl_name}
@@ -80,9 +76,8 @@ If HVR_EVENTHUB_PARTITION is set to ‘TXNID’, the agent plugin will use the t
 is only valid for an Oracle source. It requires that the {hvr_tx_seq} variable be a part of the Integrate /RenameExpression. The script 
 will not auto-assign the partition id for refresh as {hvr_txn_seq} is not populated by refresh.  When enabled, every file written by 
 integrate will contain the changes for one transaction and the {hvr_tx_seq} for that transaction will be in the file name. Note that HVR
-writes a separate file for every table in the transaction so {hvr_tbl_name} should also be in the /RenameExpression.
+writes a separate file for every table in the transaction so {hvr_tbl_name} should also be in the /RenameExpression. For example:
 
-For example:
    /RenameExpression="tranxtbl/{hvr_integ_tstamp}_{hvr_tbl_name}_{hvr_tx_seq}.csv"
 
 ## Collapse Updates
@@ -91,46 +86,46 @@ The script can be configured to collapse these two rows into one row.  The requi
 - An /Extra column is defined with /IntegrateExpression={hvr_op} (this may be the /TimeKey column)
 - The FileFormat is /Json /JsonMode=ROW_ARRAY
 
-This is configured in the UserArguments option of the AgentPlugin action as follows:
-   -ca        : Merge all columns of the before and after image.  Same as FileFormat /BeforeUpdateColumns
-   -cc        : Append to the after image row the preimage of the columns that changed.  Same as FileFormat /BeforeUpdateColumnsWhenChanged
-   -o<opcolu> : The name of the /Extra column defined with /IntegrateExpression={hvr_op}
-   -b<prefix> : Prefix for the before image values.  Default is 'Old&'
+This is configured in the UserArguments option of the AgentPlugin action as follows:<br>
+   -ca        : Merge all columns of the before and after image.  Same as FileFormat /BeforeUpdateColumns<br>
+   -cc        : Append to the after image row the preimage of the columns that changed.  Same as FileFormat /BeforeUpdateColumnsWhenChanged<br>
+   -o<opcolu> : The name of the /Extra column defined with /IntegrateExpression={hvr_op}<br>
+   -b<prefix> : Prefix for the before image values.  Default is 'Old&'<br>
 
 If there are other /Extra columns defined that have a different value for each row written to the Json file (for instance, {hvr_tx_countdown}),
 an Environment action can be added to specify those column which, if their values change, should not be added to the update row.
 
-For example:
-   AgentPlugin /Command=hvreventhubagent.py /UserArgument="-cc -o sys_op"
-   ColumnProperties /Name=sys_captstamp /Extra /IntegrateExpression={hvr_cap_tstamp} /Datatype=timestamp /Precision=10
-   ColumnProperties /Name=sys_op /Extra /IntegrateExpression={hvr_op} /TimeKey /Datatype=integer
-   Environment /Name=HVR_EVENTHUB_IGNORE_COLS /Value=sys_captstamp,sys_op
+For example:<br>
+   AgentPlugin /Command=hvreventhubagent.py /UserArgument="-cc -o sys_op"<br>
+   ColumnProperties /Name=sys_captstamp /Extra /IntegrateExpression={hvr_cap_tstamp} /Datatype=timestamp /Precision=10<br>
+   ColumnProperties /Name=sys_op /Extra /IntegrateExpression={hvr_op} /TimeKey /Datatype=integer<br>
+   Environment /Name=HVR_EVENTHUB_IGNORE_COLS /Value=sys_captstamp,sys_op<br>
 
 This logic can be further modified to discard both the before and after image of any update where there is no difference.  This is 
-configured as follows:
-   -cad       : Merge all columns of the before and after image if there are differences, discard if no differences
-   -ccd       : Append to the after image row the preimage of the columns that changed if there are differences, discard if no differences
+configured as follows:<br>
+   -cad       : Merge all columns of the before and after image if there are differences, discard if no differences<br>
+   -ccd       : Append to the after image row the preimage of the columns that changed if there are differences, discard if no differences<br>
 
 ## Transaction End Marker
 If the 'Partition Id by Transaction ID' logic is enabled, all the changes for a transaction will be routed to the same partition id in the EventHub.
 This logic can be further enhanced by marking the last row change in a transaction as the end of the transaction.  The script does this 
-by setting the value of a specified /Extra column to '1' for the last row.  The requirements for this functionality are:
-- An /Extra column is defined with /Datatype=integer
-- The FileFormat is /Json /JsonMode=ROW_ARRAY
+by setting the value of a specified /Extra column to '1' for the last row.  The requirements for this functionality are:<br>
+- An /Extra column is defined with /Datatype=integer<br>
+- The FileFormat is /Json /JsonMode=ROW_ARRAY<br>
 
-This is configured in the UserArguments option of the AgentPlugin action as follows:
-   -d<colnam> : The name of the /Extra column to be used as an end-of-transaction marker
+This is configured in the UserArguments option of the AgentPlugin action as follows:<br>
+   -d<colnam> : The name of the /Extra column to be used as an end-of-transaction marker<br>
 
-For example:
-   AgentPlugin /Command=hvreventhubagent.py /UserArgument="-d sys_end_transaction"
-   ColumnProperties /Name=sys_end_transaction /Extra /Datatype=integer	
+For example:<br>
+   AgentPlugin /Command=hvreventhubagent.py /UserArgument="-d sys_end_transaction"<br>
+   ColumnProperties /Name=sys_end_transaction /Extra /Datatype=integer	<br>
 
 ## Message Logging
-The script can be configured to log every message sent to the EventHub.  To enable this feature, set an Environment action as follws:
-    /Name=HVR_EVENTHUB_JOURNAL_BATCHES /Value=<location on integrate machine for the journal files>
+The script can be configured to log every message sent to the EventHub.  To enable this feature, set an Environment action as follws:<br>
+    /Name=HVR_EVENTHUB_JOURNAL_BATCHES /Value=<location on integrate machine for the journal files><br>
 
-The files are named as follows:
-    <channel>_<loc>_<date>_<time>_<partitionid>_<seq>
+The files are named as follows:<br>
+    <channel>_<loc>_<date>_<time>_<partitionid>_<seq><br>
 
 ## Recovery
 By default the connector removes each file as soon as it is uploaded.  At the same time it writes the filename out to a temp cache.  If the connector is interrupted (by suspending capture, for instance), the connector reads in the temp cache and skips the processing of any file named in the cache. 
