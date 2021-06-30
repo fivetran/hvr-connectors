@@ -79,6 +79,9 @@
 #     HVR_DBRK_EXTERNAL_LOC      (optional)
 #        If specified, and refresh with create table, create an external Delta table.
 #
+#     HVR_DBRK_FILE_EXPR         (optional)
+#        The Integrate /RenameExpression if set
+#
 #     HVR_DBRK_FILEFORMAT        (optional)
 #        By default the script assumes CSV format.
 #
@@ -174,6 +177,7 @@
 #     06/16/2021 RLR: Add option to specify database
 #
 #     06/18/2021 RLR v1.0  Add versioning
+#     06/30/2021 RLR v1.1  Fix table_file_name_map for non-default /RenameExpression
 #
 ################################################################################
 import sys
@@ -188,7 +192,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -206,7 +210,6 @@ class Options:
     agent_env = {}
     trace = 0
     filestore = FileStore.AWS_BUCKET
-    tablename_expression = False
     dsn = None
     connect_string = None
     connect_timeout = 0
@@ -222,6 +225,8 @@ class Options:
     secret_key = ''
     region = ''
     file_format = 'csv'
+    file_pattern = []
+    tblname_in_file_pattern = -1
     delimiter = ','
     line_separator = ''
     load_burst_delay = None
@@ -324,6 +329,8 @@ def env_load():
     if file_format.lower() == 'xml':
         raise Exception("Invalid value {0} for {1}; must be one of 'csv','json','parquet','avro'".format(file_format, 'HVR_DBRK_FILEFORMAT'))
     options.file_format = file_format.lower()
+    if os.getenv('HVR_DBRK_FILE_EXPR', ''):
+        options.tblname_in_file_pattern, options.file_pattern = parse_expression(os.getenv('HVR_DBRK_FILE_EXPR', ''))
     options.delimiter = os.getenv('HVR_DBRK_DELIMITER', ',')
     if len(options.delimiter) != 1:
         raise Exception("Invalid value {0} for {1}; must be one character".format(options.delimiter, 'HVR_DBRK_DELIMITER'))
@@ -386,6 +393,24 @@ def env_load():
                     options.directory = options.resource[options.resource.find("/")+1:]
                     options.resource = options.resource[:options.resource.find("/")]
    
+def parse_expression(filename_expression):
+    elems = []
+    for part in re.split(r'({[^}]*})', filename_expression):
+        if not part:
+            continue
+        elems.append(str(part))
+    tablename_part = -1
+    for i in range(len(elems)):
+        if elems[i] == '{hvr_tbl_name}':
+            tablename_part = i
+            break
+    if tablename_part == -1:
+        print("Warning: HVR_DBRK_FILE_EXPR defined, but does not contain {hvr_tbl_name}'")
+        return -1, []
+    trace(2, "parse {}".format(filename_expression))
+    trace(2, "   result {} {}".format(tablename_part, elems))
+    return tablename_part, elems
+
 def trace_input():
     """
     """
@@ -402,6 +427,8 @@ def trace_input():
         trace(3, "File format options: format = '{}' delimiter = '{}'  line separator = '{}'".format(options.file_format, options.delimiter, options.line_separator))
     else:
         trace(3, "File format = '{}'".format(options.file_format))
+    if options.file_pattern:
+        trace(3, "File name elements: ({}) {}".format(options.tblname_in_file_pattern, options.file_pattern))
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
     trace(3, "Auto Optimize target table during refresh = {}".format(options.auto_optimize))
     trace(3, "Create burst as unmanaged table = '{}'".format(options.unmanaged_burst))
@@ -470,7 +497,7 @@ def process_args(argv):
 
     try:
         trace = os.getenv('HVR_DBRK_TRACE', 0)
-        if trace:
+        if trace > 0:
             print("{0}: VERSION {1}".format(argv[0], VERSION))
         if trace > 2:
             print("{0} called with {1} {2} {3} {4}".format(argv[0], options.mode, options.channel, options.location, cmdargs))
@@ -1394,6 +1421,28 @@ def unused_keys_in_multidelete(tablename):
         return options.multidelete_map[tablename]
     return 'pageno'
 
+def file_for_table(tablename, filename, fileext):
+    if filename[-len(fileext):] != fileext:
+        raise Exception("Expected extension {} not found in {}".format(options.file_format, filename))
+    if options.file_pattern:
+        name = filename
+        if options.tblname_in_file_pattern > 0:
+            loc = name.find(options.file_pattern[options.tblname_in_file_pattern-1])
+            if loc >= 0:
+                name = name[loc:]
+                name = name[len(options.file_pattern[options.tblname_in_file_pattern-1]):]
+        loc = name.find(options.file_pattern[options.tblname_in_file_pattern+1])
+        if loc > 0:
+            name = name[:loc]
+        if name == tablename:
+            return True
+    name = filename[filename.find("-")+1:]
+    if name[-len(fileext):] == fileext:
+        name = name[:-len(fileext)]
+        if name == tablename:
+            return True
+    return False
+
 def table_file_name_map():
     # build search map
 
@@ -1418,10 +1467,7 @@ def table_file_name_map():
         if files :
             pop_list = []
             for idx, f in enumerate(files):
-                name = f[f.find("-")+1:]
-                if name[-len(suffix):] == suffix:
-                    name = name[:-len(suffix)]
-                if name == item[1]:
+                if file_for_table(item[1], f, suffix):
                     file_path = prefix_directory(f)
                     tbl_map[item].append(file_path)
                     pop_list.append(idx)
@@ -1432,7 +1478,7 @@ def table_file_name_map():
                 rows.pop(idx)
 
     if files :  
-        raise Exception ("$HVR_FILE_NAMES contains unexpected list of files.")
+        raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
 
     return tbl_map, num_rows
 
@@ -1691,7 +1737,7 @@ def files_found_in_filestore(table, file_list):
     options.burst_table_set_of_files = False
     if options.unmanaged_burst == 'On':
         if files_not_in_list:
-            print("Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
+            trace(1, "Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
         else:
             options.burst_table_set_of_files = True
     if options.unmanaged_burst == 'Auto':

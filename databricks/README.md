@@ -60,6 +60,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_DATABASE          |     No    | Specifies the target database, if not the default |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
 | HVR_DBRK_FILEFORMAT        |     No    | The file format configured in the FileFormat action if not CSV |
+| HVR_DBRK_FILE_EXPR         |     No    | The value of Integrate /RenameExpression if set |
 | HVR_DBRK_DELIMITER         |     No    | The FieldSeparator in the FileFormat /Csv action if set |
 | HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
 | HVR_DBRK_EXTERNAL_LOC      |     No    | The location for the unmanaged target table if create-on-refresh is configured |
