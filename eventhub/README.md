@@ -14,14 +14,14 @@ HVR via the fileFormat action.
 | Environment variable         | Mandatory | Description |
 | --------------------         | --------- | ----------- |
 | HVR_EVENTHUB_NAMESPACE       |    Yes    | Azure Namespace where the EventHub resides |
-| HVR_EVENTHUB_NAME            | (name req)| Name of the Event Hub. This or HVR_EVENTHUB_NAME_FORMAT is required |
-| HVR_EVENTHUB_NAME_FORMAT     | (name req)| Syntax to derive the name of the EventHub based on runtime variables |
+| HVR_EVENTHUB_NAME            | (name req)| Name of the Event Hub - see "EventHub Name" |
+| HVR_EVENTHUB_NAME_FORMAT     | (name req)| Syntax to derive the name of the EventHub - see "EventHub Name" |
 | HVR_EVENTHUB_USER            |    Yes    | Shared Access Policy name |
 | HVR_EVENTHUB_KEY             |    Yes    | Shared Access Policy key |
-| HVR_EVENTHUB_FILE_EXPR       |     No    | The /RenameExpression from the Integrate action - required <br>if HVR_EVENTHUB_NAME_FORMAT is set |
+| HVR_EVENTHUB_FILE_EXPR       |     No    | The /RenameExpression from the Integrate action - see "EventHub Name" |
 | HVR_EVENTHUB_PARTITION       |     No    | The partition id or "TXNID" - see "Partition by Transaction ID" |
 | HVR_EVENTHUB_IGNORE_COLS     |     No    | Ignore updates to these columns - see "Collapse Updates" |
-| HVR_EVENTHUB_JOURNAL_BATCHES |     No    | Log every batch sent to the EventHub on the Integrate machine |
+| HVR_EVENTHUB_JOURNAL_BATCHES |     No    | Log every batch sent to the EventHub - see "Message Logging" |
 | HVR_EVENTHUB_TRACE           |     No    | If set, indicates the tracing level: <br>  0: No Tracing<br>  1: Trace messages<br>  2: Trace message contents |
 
 ## UserArgument options
@@ -30,9 +30,9 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 | Option       | Description |
 | ------       | ----------- |
 | -b<prefix>   | The prefix for the before image - see "Collapse Updates" |
-| -c<a|c><d>   | Enable the collapse option - see "Collapse Updates" |
+| -c<a/c><d>   | Enable the collapse option - see "Collapse Updates" |
 | -d<colname>  | Mark end-of-transaciton - see "Transaction End Marker" |
-| -f<fail/ok>  | Fail or continue if integrate file does not exist |
+| -f<fail/ok>  | Fail or continue if integrate file does not exist - see "Recovery" |
 | -m<maxlen>   | Maximum message length. An EventHub message has an upper limit. If the integrate file exceeds <br>this length, it will be skipped. Default is 1046500 bytes. |
 | -o<opcol>    | Name of the /Extra column with /IntegrateExpression={hvr_op}. Applicable if collapse option <br>defined - documented below |
 | -t<#>        | Trace level (see HVR_EVENTHUB_TRACE) |
@@ -48,7 +48,7 @@ For instance, if the EventHub namespace is "hvrevents", and the name of the Even
 If, for any reason, it is necessary to override this logic and provide the address for the agent to use, set the address using HVR_EVENTHUB_ADDRESS.
 
 ## EventHub Name
-The name can be specified as a fixed value, or the name can be derived by the EventHub agent from variables in the environment.
+The name can be specified as a fixed value, or the name can be derived by the EventHub agent from values in the file name.  If the name is a fixed value, set HVR_EVENTHUB_NAME to that name.  Otherwise, set HVR_EVENTHUB_FILE_EXPR to the Integrate /RenameExpression for this channel.  Then set HVR_EVENTHUB_NAME_FORMAT to a string from which the connector can derive the EventHub name.   Note that the valid HVR substitution values for HVR_EVENTHUB_NAME_FORMAT are any of those used in the Integrate /RenameExpression and {hvr_chn_name} and {hvr_integ_loc}.
 For instance, it may be desirable to have an EventHub for each source table. For this to happen, the following must be configured:
 The Integrate action's /RenameExpression includes "{hvr_tbl_name}"
 - An environment action with Name=HVR_EVENTHUB_FILE_EXPR and Value=<contents of /RenameExpression from the Integrate action>
@@ -131,3 +131,6 @@ The script can be configured to log every message sent to the EventHub.  To enab
 
 The files are named as follows:
     <channel>_<loc>_<date>_<time>_<partitionid>_<seq>
+
+## Recovery
+By default the connector removes each file as soon as it is uploaded.  At the same time it writes the filename out to a temp cache.  If the connector is interrupted (by suspending capture, for instance), the connector reads in the temp cache and skips the processing of any file named in the cache. 
