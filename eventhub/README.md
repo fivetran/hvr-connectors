@@ -50,9 +50,9 @@ If, for any reason, it is necessary to override this logic and provide the addre
 ## EventHub Name
 The name can be specified as a fixed value, or the name can be derived by the EventHub agent from values in the file name.  If the name is a fixed value, set HVR_EVENTHUB_NAME to that name.  Otherwise, set HVR_EVENTHUB_FILE_EXPR to the Integrate /RenameExpression for this channel.  Then set HVR_EVENTHUB_NAME_FORMAT to a string from which the connector can derive the EventHub name.   Note that the valid HVR substitution values for HVR_EVENTHUB_NAME_FORMAT are any of those used in the Integrate /RenameExpression and {hvr_chn_name} and {hvr_integ_loc}.
 
-For instance, it may be desirable to have an EventHub for each source table. For this to happen, the Integrate action's /RenameExpression must include "{hvr_tbl_name}".  For example:
-   Integrate /RenameExpression="{hvr_tbl_name}/{hvr_integ_tstamp}.csv"
-   Environment /Name=HVR_EVENTHUB_FILE_EXPR /Value="{hvr_tbl_name}/{hvr_integ_tstamp}.csv"
+For instance, it may be desirable to have an EventHub for each source table. For this to happen, the Integrate action's /RenameExpression must include "{hvr_tbl_name}".  For example:<br>
+	Integrate /RenameExpression="{hvr_tbl_name}/{hvr_integ_tstamp}.csv"
+	Environment /Name=HVR_EVENTHUB_FILE_EXPR /Value="{hvr_tbl_name}/{hvr_integ_tstamp}.csv"
    Environment /Name=HVR_EVENTHUB_NAME_FORMAT /Value=sypd_{hvr_tbl_name}
 
 ## Partition Id
