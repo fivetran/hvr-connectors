@@ -178,6 +178,7 @@
 #
 #     06/18/2021 RLR v1.0  Add versioning
 #     06/30/2021 RLR v1.1  Fix table_file_name_map for non-default /RenameExpression
+#     07/01/2021 RLR v1.2  Escape quote all column names to support column name like class#
 #
 ################################################################################
 import sys
@@ -192,7 +193,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.1"
+VERSION = "1.2"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -496,11 +497,12 @@ def process_args(argv):
         options.truncate_target_on_refresh = False
 
     try:
-        trace = os.getenv('HVR_DBRK_TRACE', 0)
-        if trace > 0:
-            print("{0}: VERSION {1}".format(argv[0], VERSION))
-        if trace > 2:
-            print("{0} called with {1} {2} {3} {4}".format(argv[0], options.mode, options.channel, options.location, cmdargs))
+        head, tail = os.path.split(argv[0])
+        tracing = int(os.getenv('HVR_DBRK_TRACE', 0))
+        if tracing > 0:
+            print("{0}: VERSION {1}".format(tail, VERSION))
+        if tracing > 2:
+            print("{0} called with {1} {2} {3} {4}".format(tail, options.mode, options.channel, options.location, cmdargs))
     except:
         pass
 
@@ -1175,7 +1177,7 @@ def target_create_table(table, columns):
     create_sql += "TABLE {} (".format(table)
     sep = ' '
     for col in columns:
-        create_sql += "{} {} {}".format(sep, col[1], databricks_datatype(col))
+        create_sql += "{} `{}` {}".format(sep, col[1], databricks_datatype(col))
         sep = ','
     create_sql += ") USING DELTA"
     if options.external_loc:
@@ -1954,7 +1956,7 @@ def merge_into_target_from_burst(burst_table, target_table, columns, keylist):
     merge_sql = "MERGE INTO {0} a USING {1} b".format(target_table, burst_table)
     merge_sql += " ON"
     for key in keys:
-        merge_sql += " a.{0} = b.{0} AND".format(key)
+        merge_sql += " a.`{0}` = b.`{0}` AND".format(key)
     merge_sql = merge_sql[:-4]
     if options.no_isdeleted_on_target:
         merge_sql += " WHEN MATCHED AND b.{} = 0 THEN DELETE".format(options.optype)
@@ -1963,16 +1965,16 @@ def merge_into_target_from_burst(burst_table, target_table, columns, keylist):
         merge_sql += " WHEN MATCHED {} THEN UPDATE".format(skip_clause)
     merge_sql += "  SET"
     for col in columns:
-        merge_sql += " a.{0} = b.{0},".format(col)
+        merge_sql += " a.`{0}` = b.`{0}`,".format(col)
     merge_sql = merge_sql[:-1]
     merge_sql += " WHEN NOT MATCHED {} THEN INSERT".format(skip_clause)
     merge_sql += "  ("
     for col in columns:
-        merge_sql += "{0},".format(col)
+        merge_sql += "`{0}`,".format(col)
     merge_sql = merge_sql[:-1]
     merge_sql += ") VALUES ("
     for col in columns:
-        merge_sql += "b.{0},".format(col)
+        merge_sql += "b.`{0}`,".format(col)
     merge_sql = merge_sql[:-1]
     merge_sql += ")"
 
@@ -1986,11 +1988,11 @@ def define_burst_table(stage_table, target_table, columns, file_list):
     stage_sql += "("
     for col in hvr_columns:
         if col in col_types:
-            stage_sql += "{0} {1},".format(col, col_types[col])
+            stage_sql += "`{0}` {1},".format(col, col_types[col])
         elif col == options.optype or col == options.isdeleted:
-            stage_sql += "{0} int,".format(col)
+            stage_sql += "`{0}` int,".format(col)
         else:
-            stage_sql += "{0} string,".format(col)
+            stage_sql += "`{0}` string,".format(col)
     stage_sql = stage_sql[:-1]
     stage_sql += ") using {} ".format(options.file_format)
     if options.filestore == FileStore.AZURE_BLOB:
@@ -2016,11 +2018,11 @@ def copy_into_delta_table(load_table, target_table, columns, file_list):
         if col in col_types:
             type_func = col_types[col]
             if '(' in type_func:
-                copy_sql += "CAST({0} as {1}),".format(col, type_func)
+                copy_sql += "CAST(`{0}` as {1}),".format(col, type_func)
             else:
-                copy_sql += "{0}({1}),".format(type_func, col)
+                copy_sql += "{0}(`{1}`),".format(type_func, col)
         else:
-            copy_sql += "{0},".format(col)
+            copy_sql += "`{0}`,".format(col)
     copy_sql = copy_sql[:-1]
     if options.filestore == FileStore.AZURE_BLOB:
         copy_sql += " FROM 'wasbs://{0}@{1}.blob.core.windows.net/') ".format(options.container, options.resource)
