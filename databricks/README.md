@@ -186,4 +186,5 @@ perform the substitution.  For example:
 | 1.0     | 06/18/21 | First version - includes all changes up to this time as defined in the change log in hvrdatabricksagent.py |
 | 1.1     | 06/30/21 | Fix table_file_name_map for non-default /RenameExpression |
 | 1.2     | 07/01/21 | Escape quote all column names to support column name like class# |
+| 1.3     | 07/02/21 | Issue plutiple COPY INTO commands if # files > 1000 |
 

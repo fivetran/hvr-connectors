@@ -179,6 +179,7 @@
 #     06/18/2021 RLR v1.0  Add versioning
 #     06/30/2021 RLR v1.1  Fix table_file_name_map for non-default /RenameExpression
 #     07/01/2021 RLR v1.2  Escape quote all column names to support column name like class#
+#     07/02/2021 RLR v1.3  Issue plutiple COPY INTO commands if # files > 1000
 #
 ################################################################################
 import sys
@@ -193,7 +194,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.2"
+VERSION = "1.3"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2009,8 +2010,7 @@ def define_burst_table(stage_table, target_table, columns, file_list):
     trace(1, "Creating unmanaged burst table {0}".format(stage_table))
     execute_sql(stage_sql, 'Create')
 
-def copy_into_delta_table(load_table, target_table, columns, file_list):
-    hvr_columns, col_types = get_col_types(target_table, columns)
+def do_copy_into_sql(load_table, target_table, hvr_columns, col_types, file_list):
     copy_sql = ''
     copy_sql += "COPY INTO {0} FROM ".format(load_table)
     copy_sql += "(SELECT "
@@ -2045,6 +2045,16 @@ def copy_into_delta_table(load_table, target_table, columns, file_list):
 
     trace(1, "Copying from the file store into " + load_table)
     execute_sql(copy_sql, 'Copy')
+
+def copy_into_delta_table(load_table, target_table, columns, file_list):
+    MAX_COPY_FILES = 1000
+    hvr_columns, col_types = get_col_types(target_table, columns)
+    if len(file_list) <= MAX_COPY_FILES:
+        do_copy_into_sql(load_table, target_table, hvr_columns, col_types, file_list)
+        return
+    for slice in range(0, 1+int(len(file_list)/MAX_COPY_FILES)):
+        trace(3, "COPY INTO files {} to {}".format(slice, (slice*MAX_COPY_FILES), (slice+1)*MAX_COPY_FILES-1))
+        do_copy_into_sql(load_table, target_table, hvr_columns, col_types, file_list[(slice*MAX_COPY_FILES):(slice+1)*MAX_COPY_FILES])
 
 def process_table(tab_entry, file_list, numrows):
     global file_counter
