@@ -104,6 +104,11 @@ be added to define a precision lower than or equal to 38.
 
 If the FileFormat is JSON, the JsonMode should be set to RowFragments.
 
+## Names of files
+The connector associates the files produced by integrate or refresh with the different tables by parsing the file
+name.  If the Integrate RenameExpression is set, the value of RenameExpression needs to be passed to the connector in
+HVR_DBRK_FILE_EXPR.
+
 ## Burst table
 The script tries to create the burst table as an unmanaged table. That is, with syntax such as:
 
