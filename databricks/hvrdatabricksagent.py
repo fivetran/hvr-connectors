@@ -182,6 +182,7 @@
 #     07/02/2021 RLR v1.3  Issue plutiple COPY INTO commands if # files > 1000
 #     07/09/2021 RLR v1.4  Fixed a bug in create table processing ColumnProperties
 #                          DatatypeMatch where it would only apply to first column that matched
+#     07/09/2021 RLR v1.5  Fixed create table column ordering - respect source column order
 #
 ################################################################################
 import sys
@@ -196,7 +197,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.4"
+VERSION = "1.5"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1211,8 +1212,14 @@ def target_columns(table):
 #  HVR_COLUMN_COLS= ['chn_name', 'tbl_name', 'col_sequence', 'col_name', 'col_key', 'col_datatype', 'col_length', 'col_nullable']
     repo_columns = get_table_columns(table)
     target_cols = []
+    for i in range(0, len(repo_columns)):
+        target_cols.append(None)
     for col in repo_columns:
-        target_cols.append([col[3], col[3], col[4], col[5], col[6], col[7]])
+        try:
+            col_index = int(col[2]) - 1
+        except Exception as err:
+            print("Invalid value '{}' defined for column sequence in HVR_COLUMN for {}".format(col[2], table))
+        target_cols[col_index] = [col[3], col[3], col[4], col[5], col[6], col[7]]
     return target_cols
 
 def remove_column(params, columns):
