@@ -107,6 +107,14 @@
 #        command line - the 'hubdb' part of the runtime options for many HVR 
 #        commands.   
 #
+#     HVR_DBRK_TBLPROPERTIES     (optional)
+#        By default the connector sets the following table properties during refresh:
+#            autoOptimize.optimizeWrite = true, autoOptimize.autoCompact = true
+#        If this Environment variable is set, the connector will replace the default
+#        table properties settings with the configured table properties.  Note that
+#        to disable the connector setting any table properties, set this Environment
+#        variable to '' or "".
+#
 #     HVR_DBRK_MULTIDELETE  (advanced,optional, default:'')
 #        The agent supports multi-delete operations that are outputted by the
 #        SAPXForm module.  A multi-delete operation has an incomplete key.  For
@@ -183,6 +191,7 @@
 #     07/09/2021 RLR v1.4  Fixed a bug in create table processing ColumnProperties
 #                          DatatypeMatch where it would only apply to first column that matched
 #     07/09/2021 RLR v1.5  Fixed create table column ordering - respect source column order
+#     07/09/2021 RLR v1.6  Provide an Environment variable for customizing table properties
 #
 ################################################################################
 import sys
@@ -197,7 +206,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.5"
+VERSION = "1.6"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -248,6 +257,7 @@ class Options:
     truncate_target_on_refresh = True
     disable_filestore_actions = False
     recreate_tables_on_refresh = False
+    set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
     odbc = None
@@ -369,6 +379,12 @@ def env_load():
     if os.getenv('HVR_DBRK_TIMEKEY', '').upper() == 'ON':
         options.target_is_timekey = True
     options.database = os.getenv('HVR_DBRK_DATABASE', '')
+    tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES','')
+    if tblproperties:
+        if tblproperties == "''" or tblproperties == '""':
+            options.set_tblproperties = ''
+        else:
+            options.set_tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES')
     options.agent_env = load_agent_env()
     get_multidelete_map()
 
@@ -435,7 +451,7 @@ def trace_input():
     if options.file_pattern:
         trace(3, "File name elements: ({}) {}".format(options.tblname_in_file_pattern, options.file_pattern))
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
-    trace(3, "Auto Optimize target table during refresh = {}".format(options.auto_optimize))
+    trace(3, "Set TBLPROPERTIES during refresh = '{}'".format(options.set_tblproperties))
     trace(3, "Create burst as unmanaged table = '{}'".format(options.unmanaged_burst))
     if options.load_burst_delay:
         trace(3, "Delay {} seconds after creating the burst table, before loading it".format(options.load_burst_delay))
@@ -1186,8 +1202,8 @@ def target_create_table(table, columns):
     create_sql += ") USING DELTA"
     if options.external_loc:
         create_sql += " LOCATION '{}'".format(get_external_loc(table))
-    if options.auto_optimize:
-        create_sql += " TBLPROPERTIES (delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true)"
+    if options.set_tblproperties:
+        create_sql += " TBLPROPERTIES ({})".format(options.set_tblproperties)
     return create_sql
 
 def param_str_to_dict(param_str):
@@ -1870,29 +1886,9 @@ def get_col_types(base_name, columns):
     trace(2, "Column types: {}".format(col_types))
     return hvr_columns, col_types
 
-def optimize_table(base_name):
-    sql_stmt = "SHOW TBLPROPERTIES {0}".format(base_name)
-    trace(1, "Show tblproperties " + base_name)
-    trace(2, "Execute: {0}".format(sql_stmt))
-    optimized_props = 0
-    try:
-        Connections.cursor.execute(sql_stmt)
-        while True:
-            prop = Connections.cursor.fetchone()
-            if not prop:
-                break
-            if prop[0] == 'delta.autoOptimize.optimizeWrite' and prop[1].lower() == 'true':
-                optimized_props += 1
-            if prop[0] == 'delta.autoOptimize.autoCompact' and prop[1].lower() == 'true':
-                optimized_props += 1
-            trace(3, "  {} {}".format(prop[0], prop[1]))
-    except pyodbc.Error as ex:
-        print("Show SQL failed: {1}".format(sql_stmt))
-        return
-    if optimized_props == 2:
-        return
-    alter_sql = "ALTER TABLE {} SET TBLPROPERTIES (delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true)".format(base_name)
-    trace(1, "Enable auto optimize on {}".format(base_name))
+def set_table_properties(base_name):
+    alter_sql = "ALTER TABLE {} SET TBLPROPERTIES ({})".format(base_name, options.set_tblproperties)
+    trace(1, "Set TBLPROPERTIES on {}:{}".format(base_name, options.set_tblproperties))
     execute_sql(alter_sql, 'Alter')
 
 def get_create_table_ddl(hvr_table, target_name, columns):
@@ -2104,8 +2100,8 @@ def process_table(tab_entry, file_list, numrows):
             else:
                 if options.truncate_target_on_refresh:
                     truncate_table(target_table)
-                if options.auto_optimize:
-                    optimize_table(target_table)
+                if options.set_tblproperties:
+                    set_table_properties(target_table)
     t[1] = timer()
 
     if not use_burst_logic or not options.burst_table_set_of_files:

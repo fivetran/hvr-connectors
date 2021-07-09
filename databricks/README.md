@@ -67,6 +67,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_UNMANAGED_BURST   |     No    | Create the burst table unmanaged ('ON'), or managed ('OFF') |
 | HVR_DBRK_LOAD_BURST_DELAY  |     No    | Delay, in seconds, after creating the burst table and before loading |
 | HVR_DBRK_HVRCONNECT        |     No    | Provides the credentials for the script to connect to the repository |
+| HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
 
 ## UserArgument options
 The following options may be set in the /UserArguments of the AgentPlugin action for hvrdatabricksagent.py
@@ -185,6 +186,15 @@ Note that the pathname specified by HVR_DBRK_EXTERNAL_LOC may contain {hvr_tbl_n
 perform the substitution.  For example:
        /Name=HVR_DBRK_EXTERNAL_LOC /Value="/mnt/delta/{hvr_tbl_name}"
 
+## Table Properties
+By default the connector will set the following properties on the table when it is refreshed:
+
+    delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true
+
+If the Environment variable HVR_DBRK_TBLPROPERTIES is set, the connector will replace the default table properties
+with the value in the Environment variable.  If HVR_DBRK_TBLPROPERTIES is set to '' or "", the connector will
+not set table properties during refresh.
+
 ## Change Log
 | Version | Date     | Description |
 | ------- | -------- | ----------- |
@@ -194,5 +204,6 @@ perform the substitution.  For example:
 | 1.3     | 07/02/21 | Issue plutiple COPY INTO commands if # files > 1000 |
 | 1.4     | 07/09/21 | Fixed a bug in create table processing ColumnProperties DatatypeMatch where it would only apply to <br>first column that matched |
 | 1.5     | 07/09/21 | Fixed create table column ordering - respect source column order |
+| 1.6     | 07/09/21 | Provide an Environment variable for customizing table properties |
 
 
