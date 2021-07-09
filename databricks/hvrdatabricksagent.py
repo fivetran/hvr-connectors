@@ -180,6 +180,8 @@
 #     06/30/2021 RLR v1.1  Fix table_file_name_map for non-default /RenameExpression
 #     07/01/2021 RLR v1.2  Escape quote all column names to support column name like class#
 #     07/02/2021 RLR v1.3  Issue plutiple COPY INTO commands if # files > 1000
+#     07/09/2021 RLR v1.4  Fixed a bug in create table processing ColumnProperties
+#                          DatatypeMatch where it would only apply to first column that matched
 #
 ################################################################################
 import sys
@@ -194,7 +196,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.3"
+VERSION = "1.4"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1275,7 +1277,8 @@ def modify_column(params, columns):
                 col[5] = '1'
             if 'Key' in params.keys():
                 col[2] = '1'
-            return
+            if colname:
+                return
 
 def apply_column_property(table, prop, columns):
     params = prop[C_PRM]

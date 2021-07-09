@@ -192,4 +192,6 @@ perform the substitution.  For example:
 | 1.1     | 06/30/21 | Fix table_file_name_map for non-default /RenameExpression |
 | 1.2     | 07/01/21 | Escape quote all column names to support column name like class# |
 | 1.3     | 07/02/21 | Issue plutiple COPY INTO commands if # files > 1000 |
+| 1.4     | 07/09/21 | Fixed a bug in create table processing ColumnProperties DatatypeMatch where it would only apply to <br>first column that matched |
+
 
