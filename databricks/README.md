@@ -205,5 +205,6 @@ not set table properties during refresh.
 | 1.4     | 07/09/21 | Fixed a bug in create table processing ColumnProperties DatatypeMatch where it would only apply to <br>first column that matched |
 | 1.5     | 07/09/21 | Fixed create table column ordering - respect source column order |
 | 1.6     | 07/09/21 | Provide an Environment variable for customizing table properties |
+| 1.7     | 07/14/21 | Added support for /DatatypeMatch="number[prec=0 && scale=0]" only |
 
 

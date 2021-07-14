@@ -192,6 +192,8 @@
 #                          DatatypeMatch where it would only apply to first column that matched
 #     07/09/2021 RLR v1.5  Fixed create table column ordering - respect source column order
 #     07/09/2021 RLR v1.6  Provide an Environment variable for customizing table properties
+#     07/14/2021 RLR v1.7  Added support for /DatatypeMatch="number[prec=0 && scale=0]" so that
+#                          a mathc can be defined for Oracle NUMBER w/out prec or scale
 #
 ################################################################################
 import sys
@@ -206,7 +208,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.6"
+VERSION = "1.7"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1207,9 +1209,10 @@ def target_create_table(table, columns):
     return create_sql
 
 def param_str_to_dict(param_str):
+    import shlex
     param_dict = {}
     if param_str:
-        opts = param_str.split(' ')
+        opts = shlex.split(param_str)
         for opt in opts:
             option = opt[1:]
             if not '=' in option:
@@ -1237,6 +1240,14 @@ def target_columns(table):
             print("Invalid value '{}' defined for column sequence in HVR_COLUMN for {}".format(col[2], table))
         target_cols[col_index] = [col[3], col[3], col[4], col[5], col[6], col[7]]
     return target_cols
+
+def process_datatype_match(datatype_match):
+    if datatype_match and datatype_match[-1] == "]" and "[" in datatype_match:
+        ed = datatype_match.find('[')
+        if datatype_match[ed+1:-1] == "prec=0 && scale=0":
+            return datatype_match[:ed], '0'
+        trace(2, "Datatype match {}; attributes specified {}; not processed; expecting '{}'".format(datatype_match, datatype_match[ed+1:-1], "prec=0 && scale=0"))
+    return datatype_match, None
 
 def remove_column(params, columns):
     colname = get_property(params, 'Name')
@@ -1277,13 +1288,16 @@ def add_column(params, columns):
 
 def modify_column(params, columns):
     colname = get_property(params, 'Name')
-    dtmatch = get_property(params, 'DatatypeMatch')
+    dtmatch, def_ps = process_datatype_match(get_property(params, 'DatatypeMatch'))
+
     if colname:
         trace(3, "Process Column properties, modify column '{}'".format(colname))
     if dtmatch:
         trace(3, "Process Column properties, match datatype '{}'".format(dtmatch))
     for col in columns:
         if col[0] == colname or dtmatch == col[3]:
+            if dtmatch and def_ps and def_ps != col[4]:
+                continue
             if 'BaseName' in params.keys():
                 col[1] = get_property(params, 'BaseName')
             if 'Datatype' in params.keys():
