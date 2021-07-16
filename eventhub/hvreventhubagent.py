@@ -149,6 +149,7 @@
 #     05/26/2021 RLR:  Fixed logic to skip unchanged rows in collapse logic (was skipping inserts)
 #     05/27/2021 RLR:  Added logic to mark the end of the transaction by setting the column       
 #                      value of a user column to '1' for the last row in a transaction
+#     06/16/2021 RLR:  Set value of end transaction marker to 1 instead of '1'
 #
 ################################################################################
 
@@ -699,7 +700,7 @@ def process_row_data(array_data, end_transaction):
     if not output_array:
         return ''
     if options.end_trans_col and end_transaction and options.end_trans_col in output_array[-1]:
-        output_array[-1][options.end_trans_col] = '1'
+        output_array[-1][options.end_trans_col] = 1
     return json.dumps(output_array)
 
 ##### Main function ############################################################
