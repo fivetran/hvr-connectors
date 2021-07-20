@@ -1,32 +1,49 @@
 # Writing a connector
 
-If the AgentPlugin action is configured for a target group or location, HVR calls the program defined in the action four times:
+A connector is a program or script that provides an interface between HVR and a target that is not currently supported natively by HVR. A connector is configured into HVR by 1) making the target location a disk or cloud store location, 2) defining a FileFormat target action to specify the format of the files written in that location, and 3) defining an AgentPlugin action that tells HVR to run the connector.
+
+When the AgentPlugin action is configured for a target group or location, HVR calls the program defined in the action four times:
 
 - Before a refresh starts
 - After a refresh completes
 - Before an integrate cycle starts
 - After an integrate cycle ends
 
-The target platform should be providing either an API or a SQL interface.   In all the AgentPlugins we’ve written so far, where the target is not a messaging service, there is some sort of data load API or SQL, and then some sort of MERGE-type SQL.   The data load interface will be used to implement Refresh and the MERGE to implement CDC.   If there is not a MERGE SQL, the connector may have to explicitly issue INSERT/UPDATE and DELETE statements.
+When HVR calls the conenctor at the refresh end or integrate end it passes the following information using environment variables:
 
-Once the API has been identified, determine whether there is a Python package for that API.  If the API is SQL then the Python package is pyodbc.  
+- A list of the tables affected during this refresh or integrate cycle
+- For each table listed, a list of the columns
+- For each table listed, a list of the key columns
+- A list of the files written by this refresh or integrate cycle
+- The file location
 
-Depending on the target platform, and customer requirements, the connector may be expected to support a replication copy of the source table in the target, a replication copy with SoftDelete, and/or a Timekey target.
+The job of the connector is to either refresh the target using the data in the files listed, or to update the target using the data in the files listed.
 
-Support for a replication copy on the target will typically require an Extra column with IntegrateExpression set to {hvr_op} as well as an Extra column with /SoftDelete set.  These columns can be discarded by the connector when pushing the data into the target.
+To write a connector, the developer needs to determine:
 
-    /ReorderRows=SORT_COALESCE
+- What language will the connector be written in?
+- What API(s) are available and is there an interface to that API for the chosen language:
+  - If the target supports database-type objects, what is the API to load/instantiate the table?  What file formats does this API support?
+  - If the target supports database-type objects, is there a SQL interface for merging the data into the target?
+  - If the target is a messageing system, what is the API?
 
-The target location will typically be a directory on the integrate machine or a cloud file store.   A FileFormat action must be defined.   The template scripts provided expect CSV files.
+If there is a MERGE SQL interface for merging the CDC data into the target table, then The Integrate action must have the /ReorderRows=SORT_COALESCE option set so that the merge logic will not fail.
 
-The file format depends upon what file formats are support by the target platorm API, and the customer’s requirements.
+As a first step, create a channel with the 'hvrskeletonagent.py' connector.  This will give you a feel for how the connector fits into the flow of data in HVR, and expose you to the information passed to the connector by HVR (make sure to include more than one table in your tests).  Here is a sample list of the actions for this channel that should be defined for the target:
 
-The connector typically removes the files written by Refresh or Integrate after it has merged the data into the target.  If the target location is a cloud file store then this step requires a Python package for that cloud store.
+     TRG	*	*	AgentPlugin /Command=hvrskeletonagent.py	
+     TRG	*	*	FileFormat /Csv	
+     TRG	*	*	Integrate 	
 
-The first step might be to create a channel with the ‘hvrskeletonagent.py’ and the following actions and initialize the channel, run Refresh and move data through Integrate.
+Examples of connectors where the target supports database-type objects are:
 
-skeleton	SRC	*	*	Capture 	
-skeleton	TRG	*	*	AgentPlugin /Command=hvrskeletonagent.py	
-skeleton	TRG	*	*	FileFormat /Csv	
-skeleton	TRG	*	*	Integrate 	
+     actianavalanche
+     bigquery
+     databricks
+     netezza
+
+Examples of existing connectors where the target is a streaming platform are:
+
+     eventhub
+     kenesis
 
