@@ -35,6 +35,8 @@ As a first step, create a channel with the 'hvrskeletonagent.py' connector.  Thi
      TRG	*	*	FileFormat /Csv	
      TRG	*	*	Integrate 	
 
+This folder also has 'hvrdefaultagent.py'.  This 'default' Python connector is a stripped down version of a connector for a target that supports database-type objects, and where the target location is a cloud store.  If this is true for your connector, 'hvrdefaultagent.py' can be used to shorten the time to implement your connector.
+
 Examples of connectors where the target supports database-type objects are:
 
      actianavalanche
