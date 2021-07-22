@@ -74,6 +74,7 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 
 | Option | Description |
 | ------ | ----------- |
+|   -c   | The context used to refresh.  Set this option if '-r' is set and a Context is used int he refresh |
 |   -d   | Name of the SoftDelete column.  Default is 'is_deleted'.  Set this option if the SoftDelete column is configured <br>with a name other than 'is_deleted'. |
 |   -D   | Name of the SoftDelete column.  Set this option if the SoftDelete column is in the target table. |
 |   -o   | Name of the {hvr_op} column.  Default is ‘op_type’.  Set this option if the name of the Extra column populated by <br>{hvr_op} is different than ‘op_type’. |
@@ -185,6 +186,11 @@ To create an unmanaged table, specify the location of the table using the HVR_DB
 Note that the pathname specified by HVR_DBRK_EXTERNAL_LOC may contain {hvr_tbl_name} and, if it does, the script will 
 perform the substitution.  For example:
        /Name=HVR_DBRK_EXTERNAL_LOC /Value="/mnt/delta/{hvr_tbl_name}"
+
+If there are ColumnProperties actions tied to a Context, and that Context is used with the refresh, the "-c" Context should be passed to the connector using the "-c" option.
+
+## Sliced Refresh
+If the environment variable HVR_DBRK_SLICE_REFRESH_ID is set on a refresh, the connector will use locking and control functionality to ensure that the target table is truncated or created only at the beginning, and that only one slice job at a time accesses the target table.  This logic is in conjunction with the hvrslicedrefresh.py script.
 
 ## Table Properties
 By default the connector will set the following properties on the table when it is refreshed:
