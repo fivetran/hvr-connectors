@@ -201,6 +201,7 @@
 #     07/21/2021 RLR v1.9  Fixed a bug processing ColumnProperties actions for create table
 #     07/22/2021 RLR v1.10 Use ABFS driver file system when accessing files in ADLS.  Added 
 #                          an option to use WASB if desired
+#     07/23/2021 RLR v1.11 Fixed throwing "F_JX0D03: list assignment index out of range" checking Python version
 #
 ################################################################################
 import sys
@@ -315,7 +316,7 @@ def version_normalizer(version):
 def version_check():
     global python3
 
-    python3 = sys.version_info[0] == 3
+    python3 = sys.version_info.major == 3
     
 def check_hvr6():
     loginpath = os.path.join(options.hvr_home, "bin")
