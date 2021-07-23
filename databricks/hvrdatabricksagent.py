@@ -202,6 +202,7 @@
 #     07/22/2021 RLR v1.10 Use ABFS driver file system when accessing files in ADLS.  Added 
 #                          an option to use WASB if desired
 #     07/23/2021 RLR v1.11 Fixed throwing "F_JX0D03: list assignment index out of range" checking Python version
+#     07/23/2021 RLR v1.12 Use OAuth authentication by default to list and access files in ADLS gen 2
 #
 ################################################################################
 import sys
@@ -216,7 +217,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.10"
+VERSION = "1.12"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -514,6 +515,12 @@ def trace_input():
         for key, value  in env.items():
             if key.find('HVR') != -1:
                 trace(3, key + " = " + value)
+        for key, value  in env.items():
+            if key.find('AZURE') != -1:
+                if key.find('SECRET') > 0:
+                    trace(3, key + " = ..........................")
+                else:
+                    trace(3, key + " = " + value)
     else:
         for key, value  in env.iteritems():
             if key.find('HVR') != -1:
@@ -574,9 +581,9 @@ def process_args(argv):
     try:
         head, tail = os.path.split(argv[0])
         tracing = int(os.getenv('HVR_DBRK_TRACE', 0))
-        if tracing > 0:
+        if tracing > 1 and (options.mode == "refr_write_end" or options.mode == "integ_end"):
             print("{0}: VERSION {1}".format(tail, VERSION))
-        if tracing > 2:
+        if tracing > 1:
             print("{0} called with {1} {2} {3} {4}".format(tail, options.mode, options.channel, options.location, cmdargs))
     except:
         pass
@@ -1814,15 +1821,33 @@ def delete_files_from_azblob(file_list):
 #
 # Functions that interact with the Azure ADLS G2 where integrate put the files
 #
-def get_azdfs_handles():
+def get_azdfs_handle_using_azure_identity():
     url = "https://{0}.dfs.core.windows.net/".format(options.resource)
-    trace(4, "Get handle to Azure ADLS fs: DataLakeServiceClient(account_url={0}, credential={1}".format(url, options.secret_key))
+    trace(4, "Get handle to Azure ADLS fs using DefaultAzureCredential: DataLakeServiceClient(account_url={0})".format(url))
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.storage.filedatalake import DataLakeServiceClient
+        azid = DefaultAzureCredential()
+        Connections.azstore_service = DataLakeServiceClient(account_url=url, credential=azid)
+    except Exception as ex:
+        print("Failed getting a service handle using {}".format(url))
+        raise ex
+
+def get_azdfs_handle_using_access_keys():
+    url = "https://{0}.dfs.core.windows.net/".format(options.resource)
+    trace(4, "Get handle to Azure ADLS fs: DataLakeServiceClient(account_url={0}, credential={1})".format(url, options.secret_key))
     try:
         from azure.storage.filedatalake import DataLakeServiceClient
         Connections.azstore_service = DataLakeServiceClient(account_url=url, credential=options.secret_key)
     except Exception as ex:
         print("Failed getting a service handle using {}".format(url))
         raise ex
+
+def get_azdfs_handles():
+    if not options.secret_key:
+        get_azdfs_handle_using_azure_identity()
+    else:
+        get_azdfs_handle_using_access_keys()
 
 def files_in_azdfs(folder, file_list):
     files_in_list = 0
