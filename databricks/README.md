@@ -100,9 +100,11 @@ The connector needs authentication to connect to the file store and delete the f
 
 #### Azure ADLS gen2
 The ADLSg2 file store can be authorized either through an access key, or OAuth credentials.  If HVR_DBRK_FILESTORE_KEY is set, the connector will use it to connect to the file store.
+
     HVR_DBRK_FILESTORE_KEY - Set to the Azure access key
 
 If HVR_DBRK_FILESTORE_KEY is not set, the connector will authenticate with DefaultAzureCredential as described in [How to authorize Python apps on Azure](https://docs.microsoft.com/en-us/azure/developer/python/azure-sdk-authenticate). The DefaultAzureCredential automatically uses the app's managed identity (MSI) in the cloud, and automatically loads a local service principal from environment variables when running locally. The following environment variables should be set in the HVR user's environment when not running in the cloud:
+
     AZURE_TENANT_ID - Set to the directory (tenant) ID
     AZURE_CLIENT_ID - Set to the application (client) ID
     AZURE_CLIENT_SECRET - Set to the client secret
