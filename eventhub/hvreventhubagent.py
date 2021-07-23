@@ -150,6 +150,7 @@
 #     05/27/2021 RLR:  Added logic to mark the end of the transaction by setting the column       
 #                      value of a user column to '1' for the last row in a transaction
 #     06/16/2021 RLR:  Set value of end transaction marker to 1 instead of '1'
+#     06/23/2021 RLR:  Set encoding on all file open calls
 #
 ################################################################################
 
@@ -259,7 +260,7 @@ def load_agent_env():
     if 'HVR_LONG_ENVIRONMENT' in os.environ:
         hvr_long_environment= os.environ['HVR_LONG_ENVIRONMENT']
         try:
-            with open(hvr_long_environment, "r") as f:
+            with open(hvr_long_environment, "r", encoding="utf8") as f:
                 long_env= json.loads(f.read())
 
             for k,v in long_env.items():
@@ -777,7 +778,7 @@ def read_processed_files():
         full_name = os.path.join(options.state_dir, options.me[:-3] + '.processed')
         if not os.path.exists(full_name):
             return fnames
-        with open(full_name, 'r') as f:
+        with open(full_name, 'r', encoding="utf8") as f:
             fnames = f.read().split(':')
     except Exception as err:
         trace(2, "{} reading 'processed' file {}", err, full_name)
@@ -788,7 +789,7 @@ def remove_uploaded_files(files):
     try:
         full_name = os.path.join(options.state_dir, options.me[:-3] + '.processed')
         prepend = os.path.exists(full_name)
-        with open(full_name, 'a') as f:
+        with open(full_name, 'a', encoding="utf8") as f:
             if prepend:
                 f.write(':')
             f.write(":".join(files))
