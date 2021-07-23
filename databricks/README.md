@@ -52,29 +52,31 @@ the connector. They should be supplied by channel Environment actions.
 | Environment variable       | Mandatory | Description |
 | --------------------       | --------- | ----------- |
 | HVR_DBRK_DSN               |    Yes    | The DSN configured on the Integrate machine to connect to Databricks   |
-| HVR_DBRK_FILESTORE_ID      | AWS - Yes | The AWS Access Key for connecting to the target location |
-| HVR_DBRK_FILESTORE_KEY     |    Yes    | The Azure Access Key or the AWS Secret Key for connecting to the target location |
-| HVR_DBRK_FILESTORE_REGION  | AWS - No  | The region where the S3 bucket resides - for connecting to the target location |
+| HVR_DBRK_FILESTORE_ID      |   Maybe   | The AWS Access Key for connecting to the target location |
+| HVR_DBRK_FILESTORE_KEY     |   Maybe   | The Azure Access Key or the AWS Secret Key for connecting to the target location |
+| HVR_DBRK_FILESTORE_REGION  |     No    | The region where the S3 bucket resides - for connecting to the target location |
 | HVR_DBRK_CONNECT_STRING    |     No    | Replaces HVR_DBRK_DSN if desired |
 | HVR_DBRK_CONNECT_TIMEOUT   |     No    | If set, the connection to the cluster will have the specified timeout (seconds) |
 | HVR_DBRK_DATABASE          |     No    | Specifies the target database, if not the default |
-| HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
+| HVR_DBRK_DELIMITER         |     No    | The FieldSeparator in the FileFormat /Csv action if set |
+| HVR_DBRK_EXTERNAL_LOC      |     No    | The location for the unmanaged target table if create-on-refresh is configured |
 | HVR_DBRK_FILEFORMAT        |     No    | The file format configured in the FileFormat action if not CSV |
 | HVR_DBRK_FILE_EXPR         |     No    | The value of Integrate /RenameExpression if set |
-| HVR_DBRK_DELIMITER         |     No    | The FieldSeparator in the FileFormat /Csv action if set |
-| HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
-| HVR_DBRK_EXTERNAL_LOC      |     No    | The location for the unmanaged target table if create-on-refresh is configured |
-| HVR_DBRK_UNMANAGED_BURST   |     No    | Create the burst table unmanaged ('ON'), or managed ('OFF') |
-| HVR_DBRK_LOAD_BURST_DELAY  |     No    | Delay, in seconds, after creating the burst table and before loading |
 | HVR_DBRK_HVRCONNECT        |     No    | Provides the credentials for the script to connect to the repository |
+| HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
+| HVR_DBRK_LOAD_BURST_DELAY  |     No    | Delay, in seconds, after creating the burst table and before loading |
+| HVR_DBRK_MULTIDELETE       |     No    | Handle the multi-delete change that is a result of SAPXform |
+| HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
 | HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
+| HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
+| HVR_DBRK_UNMANAGED_BURST   |     No    | Create the burst table unmanaged ('ON'), or managed ('OFF') |
 
 ## UserArgument options
 The following options may be set in the /UserArguments of the AgentPlugin action for hvrdatabricksagent.py
 
 | Option | Description |
 | ------ | ----------- |
-|   -c   | The context used to refresh.  Set this option if '-r' is set and a Context is used int he refresh |
+|   -c   | The context used to refresh.  Set this option if '-r' is set and a Context is used in the refresh |
 |   -d   | Name of the SoftDelete column.  Default is 'is_deleted'.  Set this option if the SoftDelete column is configured <br>with a name other than 'is_deleted'. |
 |   -D   | Name of the SoftDelete column.  Set this option if the SoftDelete column is in the target table. |
 |   -o   | Name of the {hvr_op} column.  Default is ‘op_type’.  Set this option if the name of the Extra column populated by <br>{hvr_op} is different than ‘op_type’. |
@@ -82,7 +84,28 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 |   -p   | Set this option on a refresh of a TimeKey target if it is desired that the target is not truncated before the refresh. |
 |   -r   | Set this option to instruct the script to create/recreate the target table during Refresh |
 |   -t   | Set this option if the target is TimeKey.   Same as using the Environment action HVR_DBRK_TIMEKEY=ON |
+|   -w   | Specify files in ADLS G2 to databricks using 'wasbs://' instead of 'abfss://' |
 |   -y   | If set the script will NOT delete the files on S3 or Azure store after they have been applied to the target |
+
+## Authentication
+The connector needs authentication to connect to the file store and delete the files processed during the cycle.  Set Environment actions to the following values to provide this authorization to the conector.
+
+#### AWS
+HVR_DBRK_FILESTORE_ID - Set to the AWS access key ID
+HVR_DBRK_FILESTORE_KEY - Set to the AWS secret access key
+HVR_DBRK_FILESTORE_REGION - Set tot he region where the S3 bucket is located
+
+#### Azure Blob store
+HVR_DBRK_FILESTORE_KEY - Set to the Azure access key
+
+#### Azure ADLS gen2
+The ADLSg2 file store can be authorized either through an access key, or OAuth credentials.  If HVR_DBRK_FILESTORE_KEY is set, the connector will use it to connect to the file store.
+HVR_DBRK_FILESTORE_KEY - Set to the Azure access key
+
+If HVR_DBRK_FILESTORE_KEY is not set, the connector will authenticate with DefaultAzureCredential as described in [How to authorize Python apps on Azure](https://docs.microsoft.com/en-us/azure/developer/python/azure-sdk-authenticate). The DefaultAzureCredential automatically uses the app's managed identity (MSI) in the cloud, and automatically loads a local service principal from environment variables when running locally. The following environment variables should be set in the HVR user's environment when not running in the cloud:
+AZURE_TENANT_ID - Set to the directory (tenant) ID
+AZURE_CLIENT_ID - Set to the application (client) ID
+AZURE_CLIENT_SECRET - Set to the client secret
 
 ## File Format
 By default the script works with CSV files that have a header line.  Since there is no schema component to a CSV file, and 
@@ -106,10 +129,12 @@ be added to define a precision lower than or equal to 38.
 
 If the FileFormat is JSON, the JsonMode should be set to RowFragments.
 
-## Names of files
+## Files written by HVR and processed by the connector
 The connector associates the files produced by integrate or refresh with the different tables by parsing the file
 name.  If the Integrate RenameExpression is set, the value of RenameExpression needs to be passed to the connector in
 HVR_DBRK_FILE_EXPR.
+
+When issuing the SQL that moves the data from those files to a Delta table, the pathname is generated differently depending on the target.  For AWS the path starts with 's3://'.   For Azure Blob store the path starts with 'wasbs://'.   For ADLS Gen2 the path starts with 'abfss://'.
 
 ## Burst table
 The script tries to create the burst table as an unmanaged table. That is, with syntax such as:
@@ -181,7 +206,9 @@ To get the value for the HVR_DBRK_HVRCONNECT Environment action:
 1. In the GUI run Initialize to get the connection string.  For example, my MySQL hub's connection is:  '-uhvr/!{6mATRwyh}!' -h mysql '142.171.34.118~3308~mysql'
 2. Convert to base64 in any web converter.  
 
-The script can create the target table as a managed, or an unmanged table.   By default the table is created managed.   
+The connector retrieves the table description and all the ColumnProperites actions so that it can generate the same column description as HVR would.  If there are Contexts on the ColumnProperties actions, and if the Context is used for a refresh, the '-c <context>' option should be added to the UserArguments so that the connector knows which ColumnProperties actions to apply.
+
+The script can create the target table as a managed, or an unmanaged table.   By default the table is created managed.
 To create an unmanaged table, specify the location of the table using the HVR_DBRK_EXTERNAL_LOC environment action.  
 Note that the pathname specified by HVR_DBRK_EXTERNAL_LOC may contain {hvr_tbl_name} and, if it does, the script will 
 perform the substitution.  For example:
@@ -212,5 +239,10 @@ not set table properties during refresh.
 | 1.5     | 07/09/21 | Fixed create table column ordering - respect source column order |
 | 1.6     | 07/09/21 | Provide an Environment variable for customizing table properties |
 | 1.7     | 07/14/21 | Added support for /DatatypeMatch="number[prec=0 && scale=0]" only |
+| 1.8     | 07/20/21 | Added support for sliced refresh when generated by hvrslicedrefresh.py -s' |
+| 1.9     | 07/21/21 | Add UserArguments option to pass in the refresh Context - used to filter the ColumnProperties actions |
+| 1.10    | 07/22/21 | Use 'wasbs://' instead of 'abfss://' when passing file path into databricks |
+| 1.11    | 07/23/21 | Fixed throwing "F_JX0D03: list assignment index out of range" checking Python version |
+| 1.12    | 07/23/21 | Use OAuth authentication to list and access files in ADLS gen 2 - use access key if set |
 
 
