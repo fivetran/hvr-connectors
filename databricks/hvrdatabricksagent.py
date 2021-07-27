@@ -203,6 +203,7 @@
 #                          an option to use WASB if desired
 #     07/23/2021 RLR v1.11 Fixed throwing "F_JX0D03: list assignment index out of range" checking Python version
 #     07/23/2021 RLR v1.12 Use OAuth authentication by default to list and access files in ADLS gen 2
+#     07/23/2021 RLR v1.13 Fixed throwing "F_JX0D03: list assignment index out of range" processing target columns
 #
 ################################################################################
 import sys
@@ -217,7 +218,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.12"
+VERSION = "1.13"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1359,18 +1360,16 @@ def get_property(params, prop_name):
         return params[prop_name]
     return ''
 
+def get_sequence(col):
+    return col[2]
+
 def target_columns(table):
 #  HVR_COLUMN_COLS= ['chn_name', 'tbl_name', 'col_sequence', 'col_name', 'col_key', 'col_datatype', 'col_length', 'col_nullable']
     repo_columns = get_table_columns(table)
     target_cols = []
-    for i in range(0, len(repo_columns)):
-        target_cols.append(None)
+    repo_columns.sort(key=get_sequence)
     for col in repo_columns:
-        try:
-            col_index = int(col[2]) - 1
-        except Exception as err:
-            print("Invalid value '{}' defined for column sequence in HVR_COLUMN for {}".format(col[2], table))
-        target_cols[col_index] = [col[3], col[3], col[4], col[5], col[6], col[7]]
+        target_cols.append([col[3], col[3], col[4], col[5], col[6], col[7]])
     return target_cols
 
 def process_datatype_match(datatype_match):
