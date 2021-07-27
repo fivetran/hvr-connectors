@@ -204,6 +204,7 @@
 #     07/23/2021 RLR v1.11 Fixed throwing "F_JX0D03: list assignment index out of range" checking Python version
 #     07/23/2021 RLR v1.12 Use OAuth authentication by default to list and access files in ADLS gen 2
 #     07/23/2021 RLR v1.13 Fixed throwing "F_JX0D03: list assignment index out of range" processing target columns
+#     07/23/2021 RLR v1.14 Fixed throwing 'F_JX0D03: delete_file() takes 2 positional arguments but # were given'
 #
 ################################################################################
 import sys
@@ -218,7 +219,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.13"
+VERSION = "1.14"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1887,12 +1888,13 @@ def delete_files_from_azdfs(file_list):
         print("Failed getting container client for {}".format(options.container))
         raise ex
 
-    trace(4, "Delete from client: client.delete_file({})".format(file_list))
-    try:
-        client.delete_file(*file_list)
-    except Exception as ex:
-        print("Failed deleting file {}".format(file_list))
-        raise ex
+    for fname in file_list:
+        trace(4, "Delete from client: client.delete_file({})".format(fname))
+        try:
+            client.delete_file(fname)
+        except Exception as ex:
+            print("Failed deleting file {}".format(fname))
+            raise ex
 
 #
 # Functions that interact with file store where integrate put the files
