@@ -203,8 +203,8 @@
 #                          an option to use WASB if desired
 #     07/23/2021 RLR v1.11 Fixed throwing "F_JX0D03: list assignment index out of range" checking Python version
 #     07/23/2021 RLR v1.12 Use OAuth authentication by default to list and access files in ADLS gen 2
-#     07/23/2021 RLR v1.13 Fixed throwing "F_JX0D03: list assignment index out of range" processing target columns
-#     07/23/2021 RLR v1.14 Fixed throwing 'F_JX0D03: delete_file() takes 2 positional arguments but # were given'
+#     07/27/2021 RLR v1.13 Fixed throwing "F_JX0D03: list assignment index out of range" processing target columns
+#     07/27/2021 RLR v1.14 Fixed throwing 'F_JX0D03: delete_file() takes 2 positional arguments but # were given'
 #
 ################################################################################
 import sys

@@ -246,5 +246,5 @@ not set table properties during refresh.
 | 1.10    | 07/22/21 | Use 'wasbs://' instead of 'abfss://' when passing file path into databricks |
 | 1.11    | 07/23/21 | Fixed throwing "F_JX0D03: list assignment index out of range" checking Python version |
 | 1.12    | 07/23/21 | Use OAuth authentication to list and access files in ADLS gen 2 - use access key if set |
-
-
+| 1.13    | 07/27/21 | Fixed throwing "F_JX0D03: list assignment index out of range" processing target columns |
+| 1.14    | 07/27/21 | Fixed throwing 'F_JX0D03: delete_file() takes 2 positional arguments but # were given' |
