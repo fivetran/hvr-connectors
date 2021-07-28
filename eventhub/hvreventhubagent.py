@@ -151,6 +151,7 @@
 #                      value of a user column to '1' for the last row in a transaction
 #     06/16/2021 RLR:  Set value of end transaction marker to 1 instead of '1'
 #     06/23/2021 RLR:  Set encoding on all file open calls
+#     06/28/2021 RLR:  If the open of a file fails, skip that file and continue processing.
 #
 ################################################################################
 
@@ -202,6 +203,7 @@ class Options:
     trace = 0
     jnl_batches = ''
     jnl_fd = None
+    fail_files_loc = ''
 
 file_counter   = 0
 byte_total     = 0
@@ -333,6 +335,11 @@ def load_environment():
         if not os.path.exists(options.jnl_batches):
             pi = platform.uname()
             raise Exception("Path given for 'HVR_EVENTHUB_JOURNAL_BATCHES', {}, does not exist on {}".format(options.jnl_batches, pi.node))
+    if 'HVR_INVALID_FILE_LOC' in evars:
+        options.fail_files_loc = evars['HVR_INVALID_FILE_LOC']
+        if not os.path.exists(options.fail_files_loc):
+            pi = platform.uname()
+            raise Exception("Path given for 'HVR_INVALID_FILE_LOC', {}, does not exist on {}".format(options.fail_files_loc, pi.node))
     if 'HVR_EVENTHUB_IGNORE_COLS' in evars:
         options.ignore_columns = evars['HVR_EVENTHUB_IGNORE_COLS'].split(',')
     if 'HVR_FILE_LOC' in evars:
@@ -744,10 +751,29 @@ def hub_filename_map():
 
     return hub_map
 
+def save_invalid_file(file_name):
+    if not options.fail_files_loc:
+        return
+    base = os.path.split(file_name)
+    if not base[0]:
+        trace(2, "Cannot rename {}; no base file name".format(file_name))
+        return
+    new_name = os.path.join(options.fail_files_loc, base[0])
+    trace(2, "Rename failed file {} to {}".format(file_name, new_name))
+    try:
+        os.rename(file_name, new_name)
+    except Exception as err:
+        print("Error {} renaming {} to {}".format(err, file_name, new_name))
+
 def contents_of_integ_file(file_name, end_trans):
     content = None
-    with open(file_name, encoding="utf8") as file_fd:
-        content = file_fd.read()
+    try:
+        with open(file_name, encoding="utf8") as file_fd:
+            content = file_fd.read()
+    except Exception as err:
+        print("Error {} opening {}; skipping file".format(err, file_name))
+        save_invalid_file(file_name)
+        return ''
     trace(2, "File ({} bytes) {}", len(content), file_name)
     trace(3, "   content: {}", content)
     if options.process_json_files:

@@ -22,6 +22,7 @@ HVR via the fileFormat action.
 | HVR_EVENTHUB_PARTITION       |     No    | The partition id or "TXNID" - see "Partition by Transaction ID" |
 | HVR_EVENTHUB_IGNORE_COLS     |     No    | Ignore updates to these columns - see "Collapse Updates" |
 | HVR_EVENTHUB_JOURNAL_BATCHES |     No    | Log every batch sent to the EventHub - see "Message Logging" |
+| HVR_INVALID_FILE_LOC         |     No    | If set and the connector fails opening a file, move the file here |
 | HVR_EVENTHUB_TRACE           |     No    | If set, indicates the tracing level: <br>  0: No Tracing<br>  1: Trace messages<br>  2: Trace message contents |
 
 ## UserArgument options
