@@ -205,6 +205,7 @@
 #     07/23/2021 RLR v1.12 Use OAuth authentication by default to list and access files in ADLS gen 2
 #     07/27/2021 RLR v1.13 Fixed throwing "F_JX0D03: list assignment index out of range" processing target columns
 #     07/27/2021 RLR v1.14 Fixed throwing 'F_JX0D03: delete_file() takes 2 positional arguments but # were given'
+#     07/28/2021 RLR v1.15 Process ColumnProperties and TableProperties where chn_name='*'
 #
 ################################################################################
 import sys
@@ -219,7 +220,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.14"
+VERSION = "1.15"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -868,7 +869,7 @@ def get_table_prop_actions():
 
         Set hvr_action_rows @(Select \\
                 -o (*@hvr_action_colnames) \\           # -o=Fetch columns cols
-                -w "chn_name='{channel}' and act_name='TableProperties'"  \\
+                -w "(chn_name='*' or chn_name='{channel}') and act_name='TableProperties'"  \\
                 $db hvr_action)
 
         # Echo header,json,footer together to avoid HVR_xxx_TRACE in between
@@ -902,7 +903,7 @@ def get_config_table_prop_actions():
 
         Set hvr_config_action_rows @(Select \\
                 -o (*@hvr_config_action_colnames) \\           # -o=Fetch columns cols
-                -w "chn_name='{channel}' and act_name='TableProperties'"  \\
+                -w "(chn_name='*' or chn_name='{channel}') and act_name='TableProperties'"  \\
                 $db hvr_config_action)
 
         # Echo header,json,footer together to avoid HVR_xxx_TRACE in between
@@ -944,7 +945,7 @@ def get_column_prop_actions():
 
         Set hvr_action_rows @(Select \\
                 -o (*@hvr_action_colnames) \\           # -o=Fetch columns cols
-                -w "chn_name='{channel}' and act_name='ColumnProperties'"  \\
+                -w "(chn_name='*' or chn_name='{channel}') and act_name='ColumnProperties'"  \\
                 $db hvr_action)
 
         # Echo header,json,footer together to avoid HVR_xxx_TRACE in between
@@ -978,7 +979,7 @@ def get_config_column_prop_actions():
 
         Set hvr_config_action_rows @(Select \\
                 -o (*@hvr_config_action_colnames) \\           # -o=Fetch columns cols
-                -w "chn_name='{channel}' and act_name='ColumnProperties'"  \\
+                -w "(chn_name='*' or chn_name='{channel}') and act_name='ColumnProperties'"  \\
                 $db hvr_config_action)
 
         # Echo header,json,footer together to avoid HVR_xxx_TRACE in between
