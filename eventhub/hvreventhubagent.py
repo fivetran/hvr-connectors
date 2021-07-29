@@ -150,8 +150,9 @@
 #     05/27/2021 RLR:  Added logic to mark the end of the transaction by setting the column       
 #                      value of a user column to '1' for the last row in a transaction
 #     06/16/2021 RLR:  Set value of end transaction marker to 1 instead of '1'
-#     06/23/2021 RLR:  Set encoding on all file open calls
-#     06/28/2021 RLR:  If the open of a file fails, skip that file and continue processing.
+#     07/23/2021 RLR:  Set encoding on all file open calls
+#     07/28/2021 RLR:  If the open of a file fails, skip that file and continue processing.
+#     07/29/2021 RLR:  Remove the trace lines dumping file content - caused encoding error
 #
 ################################################################################
 
@@ -775,7 +776,6 @@ def contents_of_integ_file(file_name, end_trans):
         save_invalid_file(file_name)
         return ''
     trace(2, "File ({} bytes) {}", len(content), file_name)
-    trace(3, "   content: {}", content)
     if options.process_json_files:
         # reformat the file content
         len_b4 = len(content)
@@ -784,7 +784,6 @@ def contents_of_integ_file(file_name, end_trans):
             raise AgentError( ("File {} ({} bytes), after update processing is {} bytes. Cannot send because of maximum message "
                            "limit {}. Adjust Integrate /MaxFileSize to something lower.".format(file_name, len_b4, len(content), options.maximum_message_size)))
         trace(2, "   {} bytes", len(content))
-        trace(3, "   content: {}", content)
 
     return content
 	
