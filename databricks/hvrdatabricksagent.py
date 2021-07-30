@@ -15,12 +15,14 @@
 #
 # OPTIONS
 #     -c <context> - name of the context used in the refresh
-#     -d <name> - name of the SoftDelete column, default is 'is_deleted'
-#     -D <name> - name of the SoftDelete column, default is 'is_deleted'
-#                 if specified with "-D", the target table has this column
-#     -o <name> - name of the hvr_op column, default is 'op_type'
-#     -O <name> - name of the hvr_op column, default is 'op_type'
-#                 if specified with "-O", the target table has this column
+#     -d <name>    - name of the SoftDelete column, default is 'is_deleted'
+#     -D <name>    - name of the SoftDelete column, default is 'is_deleted'
+#                    if specified with "-D", the target table has this column
+#     -E <envvar>  - pass an environment variable
+#     -i <collist> - if '-r', these (Extra) columns are not in target
+#     -o <name>    - name of the hvr_op column, default is 'op_type'
+#     -O <name>    - name of the hvr_op column, default is 'op_type'
+#                    if specified with "-O", the target table has this column
 #     -p - preserve target data during timekey refresh
 #     -r - create (re-create) tables during refresh    
 #     -t - target is timekey
@@ -207,6 +209,7 @@
 #     07/27/2021 RLR v1.14 Fixed throwing 'F_JX0D03: delete_file() takes 2 positional arguments but # were given'
 #     07/28/2021 RLR v1.15 Process ColumnProperties and TableProperties where chn_name='*'
 #     07/30/2021 RLR v1.16 Fixed resilience of merge command - only insert ot update if hvr_op != 0
+#     07/30/2021 RLR v1.17 Added -E & -i options for refreshing two targets with the same job
 #
 ################################################################################
 import sys
@@ -221,7 +224,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.16"
+VERSION = "1.17"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -281,6 +284,7 @@ class Options:
     no_optype_on_target = True
     isdeleted = 'is_deleted'
     no_isdeleted_on_target = True
+    ignore_columns = []
     target_is_timekey = False
     truncate_target_on_refresh = True
     disable_filestore_actions = False
@@ -502,6 +506,8 @@ def trace_input():
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
     if options.recreate_tables_on_refresh and options.context:
         trace(3, "Use context '{}' when processing actions that apply to the table".format(options.context))
+    if options.ignore_columns:
+        trace(3, "These columns are not in the target table: {}".format(options.ignore_columns))
     trace(3, "Set TBLPROPERTIES during refresh = '{}'".format(options.set_tblproperties))
     if refresh_options.job_name:
         trace(3, "Sliced refresh: total slices={}; slice num={}; slice file={}".format(refresh_options.num_slices, refresh_options.slice_num, refresh_options.done_file))
@@ -544,11 +550,17 @@ def process_args(argv):
         raise Exception("$HVR_CONFIG must be defined")
     options.hvr_6 = check_hvr6()
 
+    tracing = 0
+    try:
+        tracing = int(os.getenv('HVR_DBRK_TRACE', 0))
+    except:
+        pass
+
     cmdargs = argv[4]
     if len(cmdargs):
         try:
             list_args = cmdargs.split(" ");
-            opts, args = getopt.getopt(list_args,"c:d:D:o:O:prtwy")
+            opts, args = getopt.getopt(list_args,"c:d:D:E:i:o:O:prtwy")
         except getopt.GetoptError:
             raise Exception("Error parsing command line arguments '" + cmdargs + "' due to invalid argument or invalid syntax")
     
@@ -560,6 +572,16 @@ def process_args(argv):
             elif opt == '-D':
                 options.isdeleted = arg
                 options.no_isdeleted_on_target = False
+            elif opt == '-E':
+                try:
+                    ev = arg.split('=')
+                    if tracing > 1:
+                        print("Add to environment: {}={}".format(arg, ev))
+                    os.environ[ev[0]] = ev[1]
+                except Exception as err:
+                    print("Failed {} putting {} in the environment".format(err, arg))
+            elif opt == '-i':
+                options.ignore_columns = arg.split(',')
             elif opt == '-o':
                 options.optype = arg
             elif opt == '-O':
@@ -582,15 +604,11 @@ def process_args(argv):
             raise Exception("The '-p' and '-r' options cannot both be set")
         options.truncate_target_on_refresh = False
 
-    try:
-        head, tail = os.path.split(argv[0])
-        tracing = int(os.getenv('HVR_DBRK_TRACE', 0))
-        if tracing > 1 and (options.mode == "refr_write_end" or options.mode == "integ_end"):
-            print("{0}: VERSION {1}".format(tail, VERSION))
-        if tracing > 1:
-            print("{0} called with {1} {2} {3} {4}".format(tail, options.mode, options.channel, options.location, cmdargs))
-    except:
-        pass
+    head, tail = os.path.split(argv[0])
+    if tracing > 1 and (options.mode == "refr_write_end" or options.mode == "integ_end"):
+        print("{0}: VERSION {1}".format(tail, VERSION))
+    if tracing > 1:
+        print("{0} called with {1} {2} {3} {4}".format(tail, options.mode, options.channel, options.location, cmdargs))
 
 ##### Sliced refresh functions #############################################
 
@@ -1398,6 +1416,8 @@ def add_column(params, columns):
     if colname and options.isdeleted == colname and options.no_isdeleted_on_target:
         return
     if colname and options.optype == colname and options.no_optype_on_target:
+        return
+    if colname and colname in options.ignore_columns:
         return
     basename = get_property(params, 'BaseName')
     if not basename:
@@ -2259,6 +2279,9 @@ def process_table(tab_entry, file_list, numrows):
         if options.no_isdeleted_on_target:
             if options.isdeleted in columns:
                 columns.remove(options.isdeleted)
+        for ignore in options.ignore_columns:
+            if ignore in columns:
+                columns.remove(ignore)
 
     if use_burst_logic:
         drop_table(load_table)
