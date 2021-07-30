@@ -221,7 +221,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.15"
+VERSION = "1.16"
 
 class FileStore:
     AWS_BUCKET  = 0
