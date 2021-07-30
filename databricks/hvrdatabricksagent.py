@@ -206,6 +206,7 @@
 #     07/27/2021 RLR v1.13 Fixed throwing "F_JX0D03: list assignment index out of range" processing target columns
 #     07/27/2021 RLR v1.14 Fixed throwing 'F_JX0D03: delete_file() takes 2 positional arguments but # were given'
 #     07/28/2021 RLR v1.15 Process ColumnProperties and TableProperties where chn_name='*'
+#     07/30/2021 RLR v1.16 Fixed resilience of merge command - only insert ot update if hvr_op != 0
 #
 ################################################################################
 import sys
@@ -2141,14 +2142,12 @@ def merge_into_target_from_burst(burst_table, target_table, columns, keylist):
     merge_sql = merge_sql[:-4]
     if options.no_isdeleted_on_target:
         merge_sql += " WHEN MATCHED AND b.{} = 0 THEN DELETE".format(options.optype)
-        merge_sql += " WHEN MATCHED AND b.{0} != 0 {1} THEN UPDATE".format(options.optype, skip_clause)
-    else:
-        merge_sql += " WHEN MATCHED {} THEN UPDATE".format(skip_clause)
+    merge_sql += " WHEN MATCHED AND b.{0} != 0 {1} THEN UPDATE".format(options.optype, skip_clause)
     merge_sql += "  SET"
     for col in columns:
         merge_sql += " a.`{0}` = b.`{0}`,".format(col)
     merge_sql = merge_sql[:-1]
-    merge_sql += " WHEN NOT MATCHED {} THEN INSERT".format(skip_clause)
+    merge_sql += " WHEN NOT MATCHED AND b.{0} != 0 {1} THEN INSERT".format(options.optype, skip_clause)
     merge_sql += "  ("
     for col in columns:
         merge_sql += "`{0}`,".format(col)
@@ -2243,12 +2242,13 @@ def process_table(tab_entry, file_list, numrows):
     columns = tab_entry[2].split(",")
     load_table = target_table
 
+    t = [0,0,0,0,0,0,0]
+    t[0] = timer()
     # if refreshing an empty table, or table already processed, then skip this table
     if len(file_list) == 0 or not files_found_in_filestore(tab_entry[1], file_list):
         return
 
-    t = [0,0,0,0,0,0]
-    t[0] = timer()
+    t[1] = timer()
     use_burst_logic = options.mode == "integ_end" and not options.target_is_timekey
     if use_burst_logic:
         load_table += '__bur'
@@ -2281,41 +2281,49 @@ def process_table(tab_entry, file_list, numrows):
                     truncate_table(target_table)
                 if options.set_tblproperties:
                     set_table_properties(target_table)
-    t[1] = timer()
+    t[2] = timer()
 
     if not use_burst_logic or not options.burst_table_set_of_files:
         copy_into_delta_table(load_table, target_table, columns, file_list)
-    t[2] = timer()
+    t[3] = timer()
 
     if use_burst_logic:
         merge_into_target_from_burst(load_table, target_table, columns, tab_entry[3])
-        t[3] = timer()
-        drop_table(load_table)
         t[4] = timer()
+        drop_table(load_table)
+        t[5] = timer()
+    else:
+        t[4] = t[3]
+        t[5] = t[3]
 
     file_counter += len(file_list)
     delete_files_from_filestore(file_list)
-    t[5] = timer()
+    t[6] = timer()
+    trace(3, "All times: {0:.2f}:  {1:.2f} {2:.2f} {3:.2f} {4:.2f} {5:.2f} {6:.2f}".format(t[6]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3], t[5]-t[4], t[6]-t[5]))
     if use_burst_logic:
         if options.burst_table_set_of_files:
             trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
-                     " create burst: {3:.2f}s,"
-                     " merge into target: {4:.2f}s,"
-                     " drop burst: {5:.2f}s".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[3]-t[2], t[4]-t[3]))
+                     " verify files: {3:.2f}s,"
+                     " create burst: {4:.2f}s,"
+                     " merge into target: {5:.2f}s,"
+                     " drop burst: {6:.2f}s".format(numrows, target_table, t[6]-t[0], t[1]-t[0], t[2]-t[1], t[4]-t[3], t[5]-t[4]))
         else:
             trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
-                     " create burst: {3:.2f}s,"
-                     " copy into burst: {4:.2f}s,"
-                     " merge into target: {5:.2f}s,"
-                     " drop burst: {6:.2f}s".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
+                     " verify files: {3:.2f}s,"
+                     " create burst: {4:.2f}s,"
+                     " copy into burst: {5:.2f}s,"
+                     " merge into target: {6:.2f}s,"
+                     " drop burst: {7:.2f}s".format(numrows, target_table, t[6]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3], t[5]-t[4]))
     else:
         if options.mode == "refr_write_end":
-            truncate_clause = ''
+            init_clause = ''
             if options.truncate_target_on_refresh:
-                truncate_clause = " truncate target: {0:.2f}s,".format(t[1]-t[0])
+                init_clause = " truncate target: {0:.2f}s,".format(t[2]-t[1])
+            if options.recreate_tables_on_refresh:
+                init_clause = " create targe: {0:.2f}s,".format(t[2]-t[1])
             trace(0, "Refresh of '{0}', {1} rows, took {2:.2f} seconds:"
                      "{3}"
-                     " copy into target: {4:.2f}s".format(target_table, numrows, t[5]-t[0], truncate_clause, t[2]-t[1]))
+                     " copy into target: {4:.2f}s".format(target_table, numrows, t[6]-t[0], init_clause, t[3]-t[2]))
         else:
             trace(0, "Copy of {0} rows into {1} took {2:.2f} seconds".format(numrows, target_table, t[5]-t[0]))
 
