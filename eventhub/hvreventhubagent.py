@@ -153,6 +153,7 @@
 #     07/23/2021 RLR:  Set encoding on all file open calls
 #     07/28/2021 RLR:  If the open of a file fails, skip that file and continue processing.
 #     07/29/2021 RLR:  Remove the trace lines dumping file content - caused encoding error
+#     08/03/2021 RLR:  Make sure that only the last change gets the end-transaciton marker
 #
 ################################################################################
 
@@ -406,6 +407,11 @@ def print_options():
         arg_action = "'ok': skip the file and continue processing"
     trace(2, "If the integrate file size exceeds the maximum message size = {}", arg_action)
     trace(2, "State directory = {}", options.state_dir)
+    if options.ehub_partition:
+        if options.ehub_partition == 'TXNID':
+            trace(2, "Assign events to partition based on transaction ID")
+        else:
+            trace(2, "Assign events to partition {}".format(options.ehub_partition))
     trace(2, "Data processing if /Json /ROW_ARRAY = {}".format(options.process_json_files))
     if options.process_json_files:
         trace(2, "  Column to mark end-of-transaction = {}".format(options.end_trans_col))
@@ -898,7 +904,23 @@ def split_files_for_partitions(filelist):
         trace(2, "  partition {}: {} files".format(i, len(split_list[i])))
     return split_list,txid_list
 
-def send_batch(producer, start, files, txids=[], asked_partitionid = None):
+def reverse_item(L):
+   for index in reversed(range(len(L))):
+      yield index, L[index]
+
+def get_end_trans_list(txid_list):
+    txids = []
+    eot = []
+
+    for i in range(0, len(txid_list)):
+        eot.append(0)
+    for index, txid in reverse_item(txid_list):
+        if not txid in txids:
+            txids.append(txid)
+            eot[index] = 1
+    return eot
+
+def send_batch(producer, start, files, eotlist=[], asked_partitionid = None):
     global bytes_in_files
     global byte_total
 
@@ -908,10 +930,10 @@ def send_batch(producer, start, files, txids=[], asked_partitionid = None):
         event_data_batch = producer.create_batch(max_size_in_bytes=options.maximum_message_size)
     newstart = len(files)
     for i in range(start, len(files)):
-        if options.mode == "integ_end":
-            end_trans = (i == len(txids) - 1 or (i < len(txids) - 1 and txids[i] != txids[i+1]))
+        if eotlist:
+            end_trans = eotlist[i]
         else:
-            end_trans = (i == len(files) - 1)
+            end_trans = 0
         full_name = options.file_path + '/' + files[i]
         file_as_string = contents_of_integ_file(full_name, end_trans)
         if not file_as_string:
@@ -943,7 +965,7 @@ def send_batch(producer, start, files, txids=[], asked_partitionid = None):
 
     return newstart   
 
-def upload_set_of_files(producer, files, txids=[], partition_id=None):
+def upload_set_of_files(producer, files, eotlist=[], partition_id=None):
     global file_counter
 
     if not files:
@@ -953,7 +975,7 @@ def upload_set_of_files(producer, files, txids=[], partition_id=None):
     bytes_before = byte_total
     start = 0
     while start < len(files):
-        nextstart = send_batch(producer, start, files, txids, partition_id)
+        nextstart = send_batch(producer, start, files, eotlist, partition_id)
         file_counter += len(files[start:nextstart])
         if options.remove_each_file_as_done:
             remove_uploaded_files(files[start:nextstart])
@@ -970,7 +992,8 @@ def upload_files(producer, files):
     if options.partition_ids and options.mode == "integ_end":
         split_list,txid_list = split_files_for_partitions(files)
         for partid in options.partition_ids:
-            upload_set_of_files(producer, split_list[int(partid)], txid_list[int(partid)], partid)
+            end_trans_list = get_end_trans_list(txid_list[int(partid)])
+            upload_set_of_files(producer, split_list[int(partid)], end_trans_list, partid)
     else:
         if options.ehub_partition and not options.partition_ids:
             upload_set_of_files(producer, files, [], options.ehub_partition)
