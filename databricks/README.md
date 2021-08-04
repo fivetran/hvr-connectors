@@ -249,3 +249,6 @@ not set table properties during refresh.
 | 1.13    | 07/27/21 | Fixed throwing "F_JX0D03: list assignment index out of range" processing target columns |
 | 1.14    | 07/27/21 | Fixed throwing 'F_JX0D03: delete_file() takes 2 positional arguments but # were given' |
 | 1.15    | 07/28/21 | Process ColumnProperties and TableProperties where chn_name='*' as well as chn_name=<channel> |
+| 1.16    | 07/30/21 | Fixed resilience of merge command - only insert ot update if hvr_op != 0 |
+| 1.17    | 07/30/21 | Added -E & -i options for refreshing two targets with the same job |
+| 1.18    | 08/04/21 | Fixed (re)create of target table appending rows |
