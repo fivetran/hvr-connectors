@@ -210,6 +210,7 @@
 #     07/28/2021 RLR v1.15 Process ColumnProperties and TableProperties where chn_name='*'
 #     07/30/2021 RLR v1.16 Fixed resilience of merge command - only insert ot update if hvr_op != 0
 #     07/30/2021 RLR v1.17 Added -E & -i options for refreshing two targets with the same job
+#     08/04/2021 RLR v1.18 Fixed (re)create of target table appending rows
 #
 ################################################################################
 import sys
@@ -224,7 +225,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.17"
+VERSION = "1.18"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1889,7 +1890,10 @@ def files_in_azdfs(folder, file_list):
         print("Failed getting list of files in {0}/{1}".format(options.container, folder))
         raise ex
 
+    state_files = 0
     for file_path in path_list:
+        if file_path.name.startswith('_hvr_state/'):
+            state_files += 1
         if folder:
             if file_path.name == folder or not file_path.name.startswith(folder):
                 continue
@@ -1899,6 +1903,8 @@ def files_in_azdfs(folder, file_list):
         else:
             files_not_in_list += 1
 
+    if state_files:
+        trace(3, "{} files in _hvr_state".format(state_files))
     return files_in_list,files_not_in_list
 
 def delete_files_from_azdfs(file_list):
@@ -2105,7 +2111,6 @@ def recreate_target_table(hvr_table):
         target_name = get_target_tablename(hvr_table)
         columns = target_columns(hvr_table)
     create_sql = get_create_table_ddl(hvr_table, target_name, columns)
-    drop_table(target_name)
     trace(1, "Creating table " + target_name)
     execute_sql(create_sql, 'Create')
 
