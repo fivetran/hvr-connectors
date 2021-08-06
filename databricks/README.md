@@ -267,3 +267,4 @@ not set table properties during refresh.
 | 1.18    | 08/04/21 | Fixed (re)create of target table appending rows |
 | 1.19    | 08/06/21 | Fixed regression from v1.18 where create table failed on a managed target table |
 |         |          | Added finer controls over what file operations are executed |
+|         |          | Reduce the number of files returned by azstore_service.get_file_system_client.get_paths |

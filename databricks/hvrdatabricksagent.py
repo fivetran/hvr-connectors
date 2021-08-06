@@ -224,6 +224,7 @@
 #     08/04/2021 RLR v1.18 Fixed (re)create of target table appending rows
 #     08/06/2021 RLR v1.19 Fixed regression from v1.18 where create table failed on a managed target table
 #                          Added finer controls over what file operations are executed
+#                          Reduce the number of files returned by azstore_service.get_file_system_client.get_paths
 #
 ################################################################################
 import sys
@@ -1913,17 +1914,14 @@ def files_in_azdfs(folder, file_list):
         print("Failed getting container client for {}".format(options.container))
         raise ex
 
-    trace(4, "List files: client.get_paths(), filter by {}".format(folder))
+    trace(4, "List files: client.get_paths(path='/{}')".format(folder))
     try:
-        path_list = client.get_paths()
+        path_list = client.get_paths(path='/' + folder)
     except Exception as ex:
         print("Failed getting list of files in {0}/{1}".format(options.container, folder))
         raise ex
 
-    state_files = 0
     for file_path in path_list:
-        if file_path.name.startswith('_hvr_state/'):
-            state_files += 1
         if folder:
             if file_path.name == folder or not file_path.name.startswith(folder):
                 continue
@@ -1933,8 +1931,6 @@ def files_in_azdfs(folder, file_list):
         else:
             files_not_in_list += 1
 
-    if state_files:
-        trace(3, "{} files in _hvr_state".format(state_files))
     return files_in_list,files_not_in_list
 
 def delete_files_from_azdfs(file_list):
