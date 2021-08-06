@@ -77,6 +77,17 @@
 #     HVR_DBRK_FILESTORE_REGION  (optional)
 #        The region of the S3 cloud storage
 #
+#     HVR_DBRK_FILESTORE_OPS     (optional)
+#        Valid values:
+#            'check', 'delete', 'none'
+#        By default the script accesses the filestore to:
+#            - 'check' that the files passed in HVR_FILE_NAMES are there.  If the connector
+#              was interrupted (suspend integrate), then the files might not exist when
+#              the connector is restarted
+#            - 'check' that only the passed in HVR_FILE_NAMES are in the file location to
+#              evaluate whether the burst table can be created as an unmanaged table
+#            - 'delete' the files after the table has been integrated
+#
 #     HVR_DBRK_TIMEKEY           (optional)
 #        If set to 'ON', changes are appended to target
 #
@@ -211,6 +222,8 @@
 #     07/30/2021 RLR v1.16 Fixed resilience of merge command - only insert ot update if hvr_op != 0
 #     07/30/2021 RLR v1.17 Added -E & -i options for refreshing two targets with the same job
 #     08/04/2021 RLR v1.18 Fixed (re)create of target table appending rows
+#     08/06/2021 RLR v1.19 Fixed regression from v1.18 where create table failed on a managed target table
+#                          Added finer controls over what file operations are executed
 #
 ################################################################################
 import sys
@@ -231,6 +244,12 @@ class FileStore:
     AWS_BUCKET  = 0
     AZURE_BLOB  = 1
     ADLS_G2     = 2
+
+class FileOps:
+    NONE        = 0
+    CHECK       = 1
+    DELETE      = 2
+    ALL         = 3
 
 class RefreshOptions:
     num_slices = None
@@ -288,7 +307,7 @@ class Options:
     ignore_columns = []
     target_is_timekey = False
     truncate_target_on_refresh = True
-    disable_filestore_actions = False
+    filestore_ops = FileOps.ALL
     recreate_tables_on_refresh = False
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
@@ -398,6 +417,15 @@ def env_load():
             options.unmanaged_burst = 'On'
         else:
             options.unmanaged_burst = 'Off'
+    fileops = os.getenv('HVR_DBRK_FILESTORE_OPS', '')
+    if fileops.lower() == 'none':
+        options.filestore_ops = FileOps.NONE
+    elif fileops.lower() == 'check':
+        options.filestore_ops = FileOps.CHECK
+    elif fileops.lower() == 'delete':
+        options.filestore_ops = FileOps.DELETE
+    elif fileops:
+        raise Exception("Invalid file operation '{}' defined in HVR_DBRK_FILESTORE_OPS; valid values are 'check','delete','none'".format(fileops))
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
@@ -518,8 +546,13 @@ def trace_input():
 
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh = {}".format(not options.truncate_target_on_refresh))
-    if options.disable_filestore_actions:
-        trace(3, "Filestore operations disabled")
+    if options.filestore_ops != FileOps.ALL:
+        if options.filestore_ops != FileOps.CHECK:
+            trace(3, "Check of files in filestore disabled")
+        if options.filestore_ops != FileOps.DELETE:
+            trace(3, "Delete of files in filestore disabled")
+        if options.filestore_ops == FileOps.NONE:
+            trace(3, "All filestore operations disabled")
     trace(3, "============================================")
     env = os.environ
     if python3:
@@ -597,7 +630,7 @@ def process_args(argv):
             elif opt == '-w':
                 options.use_wasb = True
             elif opt == '-y':
-                options.disable_filestore_actions = True
+                options.filestore_ops = FileOps.NONE
 
     if options.recreate_tables_on_refresh: 
         if  not options.truncate_target_on_refresh:
@@ -1348,10 +1381,7 @@ def get_external_loc(table):
     return options.external_loc
 
 def target_create_table(table, columns):
-    create_sql = 'CREATE '
-    if options.external_loc:
-        create_sql += 'OR REPLACE '
-    create_sql += "TABLE {} (".format(table)
+    create_sql = "CREATE OR REPLACE TABLE {} (".format(table)
     sep = ' '
     for col in columns:
         create_sql += "{} `{}` {}".format(sep, col[1], databricks_datatype(col))
@@ -1928,7 +1958,7 @@ def delete_files_from_azdfs(file_list):
 # Functions that interact with file store where integrate put the files
 #
 def get_filestore_handles():
-    if options.disable_filestore_actions:
+    if options.filestore_ops == FileOps.NONE:
         return
     if options.filestore == FileStore.ADLS_G2:
         get_azdfs_handles()
@@ -1938,7 +1968,7 @@ def get_filestore_handles():
         get_s3_handles()
 
 def files_found_in_filestore(table, file_list):
-    if options.disable_filestore_actions:
+    if options.filestore_ops != FileOps.CHECK and options.filestore_ops != FileOps.ALL:
         return True
     folder = file_list[0]
     if '/' in folder:
@@ -1982,7 +2012,7 @@ def files_found_in_filestore(table, file_list):
     return True
 
 def delete_files_from_filestore(file_list):
-    if options.disable_filestore_actions:
+    if options.filestore_ops != FileOps.DELETE and options.filestore_ops != FileOps.ALL:
         return
     trace(1, "Delete files from {0}".format(options.container))
     if options.filestore == FileStore.ADLS_G2:

@@ -61,6 +61,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_DELIMITER         |     No    | The FieldSeparator in the FileFormat /Csv action if set |
 | HVR_DBRK_EXTERNAL_LOC      |     No    | The location for the unmanaged target table if create-on-refresh is configured |
 | HVR_DBRK_FILEFORMAT        |     No    | The file format configured in the FileFormat action if not CSV |
+| HVR_DBRK_FILESTORE_OPS     |     No    | Control which file operations are executed |
 | HVR_DBRK_FILE_EXPR         |     No    | The value of Integrate /RenameExpression if set |
 | HVR_DBRK_HVRCONNECT        |     No    | Provides the credentials for the script to connect to the repository |
 | HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
@@ -137,6 +138,18 @@ name.  If the Integrate RenameExpression is set, the value of RenameExpression n
 HVR_DBRK_FILE_EXPR.
 
 When issuing the SQL that moves the data from those files to a Delta table, the pathname is generated differently depending on the target.  For AWS the path starts with 's3://'.   For Azure Blob store the path starts with 'wasbs://'.   For ADLS Gen2 the path starts with 'abfss://'.
+
+The connector processes one table at a time.   As soon as the data for a table has been merged, the connector will delete the files for that table.  If the connector is interrupted (this could happen when Integrate is suspended), then when HVR or Integrate start back up, the connector will be called again with the same environment variable settings. For this reason the connector always checks that the files exist before processing a table.   If they do not exist the connector will skip that table as it has already been processed.
+
+The connector also checks to see if the files written by Integrate in the last cycle are the only files in the folder.  If they are, then the connector can create the burst table as an unmanaged table passing the folder as the location.  See 'Burst table' below.
+
+The various file operations performed by the connector can be disabled using HVR_DBRK_FILESTORE_OPS.  Its valid values are:
+
+    'check'
+    'delete'
+    'none'
+
+If set to 'none' the connector will not check that the files exist, nor will it delete the files after the table has been processed.
 
 ## Burst table
 The script tries to create the burst table as an unmanaged table. That is, with syntax such as:
@@ -252,3 +265,5 @@ not set table properties during refresh.
 | 1.16    | 07/30/21 | Fixed resilience of merge command - only insert ot update if hvr_op != 0 |
 | 1.17    | 07/30/21 | Added -E & -i options for refreshing two targets with the same job |
 | 1.18    | 08/04/21 | Fixed (re)create of target table appending rows |
+| 1.19    | 08/06/21 | Fixed regression from v1.18 where create table failed on a managed target table |
+|         |          | Added finer controls over what file operations are executed |
