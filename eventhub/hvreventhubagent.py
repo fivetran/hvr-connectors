@@ -154,6 +154,7 @@
 #     07/28/2021 RLR:  If the open of a file fails, skip that file and continue processing.
 #     07/29/2021 RLR:  Remove the trace lines dumping file content - caused encoding error
 #     08/03/2021 RLR:  Make sure that only the last change gets the end-transaciton marker
+#     08/12/2021 RLR:  Make the 'processed file' name unique to the channel/location
 #
 ################################################################################
 
@@ -190,7 +191,7 @@ class Options:
     partition_ids = []
     filenames = []
     file_path = ''
-    state_dir = ''
+    processed_file = ''
     maximum_message_size = 1046500
     process_json_files = False
     collapse_befores = ''
@@ -346,8 +347,6 @@ def load_environment():
         options.ignore_columns = evars['HVR_EVENTHUB_IGNORE_COLS'].split(',')
     if 'HVR_FILE_LOC' in evars:
         options.file_path = evars['HVR_FILE_LOC']
-    if 'HVR_LOC_STATEDIR' in evars:
-        options.state_dir = evars['HVR_LOC_STATEDIR']
     if 'HVR_FILE_NAMES' in evars and evars['HVR_FILE_NAMES']:
         options.filenames = evars['HVR_FILE_NAMES'].split(':')
         if options.filenames[-1].endswith("..."):
@@ -406,7 +405,6 @@ def print_options():
     else:
         arg_action = "'ok': skip the file and continue processing"
     trace(2, "If the integrate file size exceeds the maximum message size = {}", arg_action)
-    trace(2, "State directory = {}", options.state_dir)
     if options.ehub_partition:
         if options.ehub_partition == 'TXNID':
             trace(2, "Assign events to partition based on transaction ID")
@@ -422,6 +420,7 @@ def print_options():
             trace(2, "    Before column prefix = {}", options.before_prefix)
     trace(2, "debug_mode = {}", options.debug_mode)
     trace(2, "Journal batches sent = {}", options.jnl_batches)
+    trace(3, "Processed files = {}".format(options.processed_file))
     trace(1, "trace = {}", options.trace)
     trace(1, "============================================")
 
@@ -527,6 +526,8 @@ def get_options(argv):
                 options.fail_if_file_too_large = (opt_val != 'ok')
             elif opt_key == '-z':
                 options.debug_mode = (opt_val == 'on')
+
+    define_processed_file()
 
     if options.collapse_befores or options.end_trans_col:
         options.process_json_files = True
@@ -793,46 +794,51 @@ def contents_of_integ_file(file_name, end_trans):
 
     return content
 	
+def define_processed_file():
+    base_dir = os.getenv('HVR_LOC_STATEDIR', '/tmp')
+    options.processed_file = os.path.join(base_dir, "{}_{}_{}.processed".format(options.me[:-3], options.channel, options.location))
+
 def reset_processed_file():
+    trace(3, "Delete {}".format(options.processed_file))
     try:
-        full_name = os.path.join(options.state_dir, options.me[:-3] + '.processed')
-        if os.path.exists(full_name):
-            trace(2, "(reset) {}".format(full_name))
-            os.remove(full_name)
+        if os.path.exists(options.processed_file):
+            trace(2, "(reset) {}".format(options.processed_file))
+            os.remove(options.processed_file)
     except Exception as err:
-        trace(2, "{} removing 'processed' file {}", err, full_name)
+        trace(2, "{} removing 'processed' file {}", err, options.processed_file)
         pass
 	
 def read_processed_files():
+    trace(3, "Read {}".format(options.processed_file))
     fnames = []
     try:
-        full_name = os.path.join(options.state_dir, options.me[:-3] + '.processed')
-        if not os.path.exists(full_name):
+        if not os.path.exists(options.processed_file):
             return fnames
-        with open(full_name, 'r', encoding="utf8") as f:
+        with open(options.processed_file, 'r', encoding="utf8") as f:
             fnames = f.read().split(':')
     except Exception as err:
-        trace(2, "{} reading 'processed' file {}", err, full_name)
+        trace(2, "{} reading 'processed' file {}", err, options.processed_file)
         pass
+    trace(3, "Processed files {}".format(fnames))
     return fnames
 	
 def remove_uploaded_files(files):
+    trace(3, "Add processed files {}".format(files))
     try:
-        full_name = os.path.join(options.state_dir, options.me[:-3] + '.processed')
-        prepend = os.path.exists(full_name)
-        with open(full_name, 'a', encoding="utf8") as f:
+        prepend = os.path.exists(options.processed_file)
+        with open(options.processed_file, 'a', encoding="utf8") as f:
             if prepend:
                 f.write(':')
             f.write(":".join(files))
             f.flush()
     except Exception as err:
-        trace(2, "{} writing 'processed' file {}", err, full_name)
+        trace(2, "{} writing 'processed' file {}", err, options.processed_file)
         pass
     for fname in files:
-        full_name = options.file_path + '/' + fname
-        trace(2, "Remove {}".format(full_name))
-        if os.path.exists(full_name):
-            os.remove(full_name)
+        full_path = options.file_path + '/' + fname
+        trace(2, "Remove {}".format(full_path))
+        if os.path.exists(full_path):
+            os.remove(full_path)
 
 def journal_batch(producer, partition_id, message=None):
     if not options.jnl_batches:
