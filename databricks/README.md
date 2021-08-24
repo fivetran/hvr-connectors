@@ -147,9 +147,12 @@ The various file operations performed by the connector can be disabled using HVR
 
     'check'
     'delete'
+    '+cleanup'
     'none'
 
 If set to 'none' the connector will not check that the files exist, nor will it delete the files after the table has been processed.
+
+If set to '+cleanup' the connector will delete any files it finds in the folder during the 'check' phase that are not part of this integrate cycle.  Note that to enable '+cleanup', HVR_DBRK_FILE_EXPR must be set to the value of Integrate /RenameExpression and the pathname specified by HVR_DBRK_FILE_EXPR must include {hvr_tbl_name} as an element in a folder, not just the file name.
 
 ## Burst table
 The script tries to create the burst table as an unmanaged table. That is, with syntax such as:
@@ -268,3 +271,4 @@ not set table properties during refresh.
 | 1.19    | 08/06/21 | Fixed regression from v1.18 where create table failed on a managed target table |
 |         |          | Added finer controls over what file operations are executed |
 |         |          | Reduce the number of files returned by azstore_service.get_file_system_client.get_paths |
+| 1.20    | 08/24/21 | Added a '+cleanup' option for HBVR_DBRK_FILESTORE_OPS to cleanup files |

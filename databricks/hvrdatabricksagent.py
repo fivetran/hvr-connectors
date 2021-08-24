@@ -79,7 +79,7 @@
 #
 #     HVR_DBRK_FILESTORE_OPS     (optional)
 #        Valid values:
-#            'check', 'delete', 'none'
+#            'check', 'delete', 'none', '+cleanup'
 #        By default the script accesses the filestore to:
 #            - 'check' that the files passed in HVR_FILE_NAMES are there.  If the connector
 #              was interrupted (suspend integrate), then the files might not exist when
@@ -87,6 +87,11 @@
 #            - 'check' that only the passed in HVR_FILE_NAMES are in the file location to
 #              evaluate whether the burst table can be created as an unmanaged table
 #            - 'delete' the files after the table has been integrated
+#        If set to '+cleanup', the connector will 'check' and 'delete'.  In addition it will
+#        remove all the files found in the location during the check step that are not a part
+#        of this integrate cycle for this table. Note that the '+cleanup' option is valid 
+#        only for Azure filestore where HVR_DBRK_FILE_EXPR is defined and the folder defined
+#        in HVR_DBRK_FILE_EXPR includes {hvr_tbl_name}.
 #
 #     HVR_DBRK_TIMEKEY           (optional)
 #        If set to 'ON', changes are appended to target
@@ -225,6 +230,7 @@
 #     08/06/2021 RLR v1.19 Fixed regression from v1.18 where create table failed on a managed target table
 #                          Added finer controls over what file operations are executed
 #                          Reduce the number of files returned by azstore_service.get_file_system_client.get_paths
+#     08/24/2021 RLR v1.20 Added a '+cleanup' option for HBVR_DBRK_FILESTORE_OPS to cleanup files
 #
 ################################################################################
 import sys
@@ -239,7 +245,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.18"
+VERSION = "1.20"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -247,10 +253,12 @@ class FileStore:
     ADLS_G2     = 2
 
 class FileOps:
-    NONE        = 0
-    CHECK       = 1
-    DELETE      = 2
-    ALL         = 3
+    CHECK       = 0x01
+    DELETE      = 0x02
+    CLEANUP     = 0x04
+
+DEFAULT_FILEOPS = (FileOps.CHECK | FileOps.DELETE)
+ALL_FILEOPS = (FileOps.CHECK | FileOps.DELETE | FileOps.CLEANUP)
 
 class RefreshOptions:
     num_slices = None
@@ -308,7 +316,8 @@ class Options:
     ignore_columns = []
     target_is_timekey = False
     truncate_target_on_refresh = True
-    filestore_ops = FileOps.ALL
+    filestore_ops = DEFAULT_FILEOPS
+    other_files_in_loc = []
     recreate_tables_on_refresh = False
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
@@ -420,13 +429,15 @@ def env_load():
             options.unmanaged_burst = 'Off'
     fileops = os.getenv('HVR_DBRK_FILESTORE_OPS', '')
     if fileops.lower() == 'none':
-        options.filestore_ops = FileOps.NONE
+        options.filestore_ops = 0
     elif fileops.lower() == 'check':
         options.filestore_ops = FileOps.CHECK
     elif fileops.lower() == 'delete':
         options.filestore_ops = FileOps.DELETE
+    elif fileops.lower() == '+cleanup':
+        options.filestore_ops = ALL_FILEOPS
     elif fileops:
-        raise Exception("Invalid file operation '{}' defined in HVR_DBRK_FILESTORE_OPS; valid values are 'check','delete','none'".format(fileops))
+        raise Exception("Invalid file operation '{}' defined in HVR_DBRK_FILESTORE_OPS; valid values are 'check','delete','none','+cleanup'".format(fileops))
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
@@ -495,6 +506,21 @@ def env_load():
                     options.directory = options.resource[options.resource.find("/")+1:]
                     options.resource = options.resource[:options.resource.find("/")]
    
+    if options.filestore_ops & FileOps.CLEANUP:
+        if options.filestore == FileStore.AWS_BUCKET:
+            print("Filestore cleanup not enabled yet for AWS file store")
+            options.filestore_ops = DEFAULT_FILEOPS
+        else:
+            file_expr = os.getenv('HVR_DBRK_FILE_EXPR', '')
+            if not file_expr:
+                print("HVR_DBRK_FILE_EXPR is not set; cannot determine if filestore cleanup is safe; disabling")
+                options.filestore_ops = DEFAULT_FILEOPS
+            else:
+                path_parts = os.path.split(file_expr)
+                if not '{hvr_tbl_name}' in path_parts[0]:
+                    print("Integrate /RenameExpression, as passed in HVR_DBRK_FILE_EXPR, does not have the table name in the folder component; disabling filestore cleanup")
+                    options.filestore_ops = DEFAULT_FILEOPS
+
 def parse_expression(filename_expression):
     elems = []
     for part in re.split(r'({[^}]*})', filename_expression):
@@ -547,12 +573,14 @@ def trace_input():
 
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh = {}".format(not options.truncate_target_on_refresh))
-    if options.filestore_ops != FileOps.ALL:
-        if options.filestore_ops != FileOps.CHECK:
+    if options.filestore_ops != DEFAULT_FILEOPS:
+        if (options.filestore_ops & FileOps.CHECK) == 0:
             trace(3, "Check of files in filestore disabled")
-        if options.filestore_ops != FileOps.DELETE:
+        if (options.filestore_ops & FileOps.DELETE) == 0:
             trace(3, "Delete of files in filestore disabled")
-        if options.filestore_ops == FileOps.NONE:
+        if options.filestore_ops & FileOps.CLEANUP:
+            trace(3, "Cleanup of files in filestore enabled")
+        if options.filestore_ops == 0:
             trace(3, "All filestore operations disabled")
     trace(3, "============================================")
     env = os.environ
@@ -631,7 +659,7 @@ def process_args(argv):
             elif opt == '-w':
                 options.use_wasb = True
             elif opt == '-y':
-                options.filestore_ops = FileOps.NONE
+                options.filestore_ops = 0
 
     if options.recreate_tables_on_refresh: 
         if  not options.truncate_target_on_refresh:
@@ -1800,6 +1828,9 @@ def files_in_s3(folder, file_list):
                 files_in_list += 1
             else:
                 files_not_in_list += 1
+                if options.filestore_ops & FileOps.CLEANUP:
+                    trace(2, "Filestore cleanup not yet enabled for AWS")
+                    # options.other_files_in_loc.append(obj['Key'])
 
     return files_in_list,files_not_in_list
 
@@ -1853,6 +1884,8 @@ def files_in_azblob(folder, file_list):
             files_in_list += 1
         elif blob.name != folder:
             files_not_in_list += 1
+            if options.filestore_ops & FileOps.CLEANUP:
+                options.other_files_in_loc.append(blob.name)
 
     return files_in_list,files_not_in_list
 
@@ -1930,6 +1963,8 @@ def files_in_azdfs(folder, file_list):
             files_in_list += 1
         else:
             files_not_in_list += 1
+            if options.filestore_ops & FileOps.CLEANUP:
+                options.other_files_in_loc.append(file_path.name)
 
     return files_in_list,files_not_in_list
 
@@ -1954,7 +1989,7 @@ def delete_files_from_azdfs(file_list):
 # Functions that interact with file store where integrate put the files
 #
 def get_filestore_handles():
-    if options.filestore_ops == FileOps.NONE:
+    if not options.filestore_ops:
         return
     if options.filestore == FileStore.ADLS_G2:
         get_azdfs_handles()
@@ -1964,7 +1999,7 @@ def get_filestore_handles():
         get_s3_handles()
 
 def files_found_in_filestore(table, file_list):
-    if options.filestore_ops != FileOps.CHECK and options.filestore_ops != FileOps.ALL:
+    if (options.filestore_ops & FileOps.CHECK) == 0:
         return True
     folder = file_list[0]
     if '/' in folder:
@@ -2008,7 +2043,7 @@ def files_found_in_filestore(table, file_list):
     return True
 
 def delete_files_from_filestore(file_list):
-    if options.filestore_ops != FileOps.DELETE and options.filestore_ops != FileOps.ALL:
+    if (options.filestore_ops & FileOps.DELETE) == 0:
         return
     trace(1, "Delete files from {0}".format(options.container))
     if options.filestore == FileStore.ADLS_G2:
@@ -2017,6 +2052,15 @@ def delete_files_from_filestore(file_list):
         delete_files_from_azblob(file_list)
     else:
         delete_files_from_s3(file_list)
+
+def delete_other_files_from_filestore():
+    if not options.other_files_in_loc:
+        return
+    if options.filestore_ops & FileOps.CLEANUP:
+        trace(1, "Remove old files from filestore")
+        for file in options.other_files_in_loc:
+            trace(3, "   {}".format(file))
+        delete_files_from_filestore(options.other_files_in_loc)
 
 #
 # ODBC functions interacting with Databricks
@@ -2352,6 +2396,8 @@ def process_table(tab_entry, file_list, numrows):
 
     file_counter += len(file_list)
     delete_files_from_filestore(file_list)
+    delete_other_files_from_filestore()
+
     t[6] = timer()
     trace(3, "All times: {0:.2f}:  {1:.2f} {2:.2f} {3:.2f} {4:.2f} {5:.2f} {6:.2f}".format(t[6]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3], t[5]-t[4], t[6]-t[5]))
     if use_burst_logic:
