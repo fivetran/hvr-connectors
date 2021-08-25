@@ -231,6 +231,7 @@
 #                          Added finer controls over what file operations are executed
 #                          Reduce the number of files returned by azstore_service.get_file_system_client.get_paths
 #     08/24/2021 RLR v1.20 Added a '+cleanup' option for HBVR_DBRK_FILESTORE_OPS to cleanup files
+#     08/25/2021 RLR v1.21 Only cleanup during integrate, not refresh
 #
 ################################################################################
 import sys
@@ -245,7 +246,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.20"
+VERSION = "1.21"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2054,7 +2055,7 @@ def delete_files_from_filestore(file_list):
         delete_files_from_s3(file_list)
 
 def delete_other_files_from_filestore():
-    if not options.other_files_in_loc:
+    if not options.mode == "integ_end" or not options.other_files_in_loc:
         return
     if options.filestore_ops & FileOps.CLEANUP:
         trace(1, "Remove old files from filestore")
