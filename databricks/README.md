@@ -272,3 +272,5 @@ not set table properties during refresh.
 |         |          | Added finer controls over what file operations are executed |
 |         |          | Reduce the number of files returned by azstore_service.get_file_system_client.get_paths |
 | 1.20    | 08/24/21 | Added a '+cleanup' option for HBVR_DBRK_FILESTORE_OPS to cleanup files |
+| 1.21    | 08/25/21 | Only cleanup during integrate, not refresh |
+| 1.22    | 08/27/21 | Create burst table explicilty instead of as select from target |

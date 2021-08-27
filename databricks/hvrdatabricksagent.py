@@ -232,6 +232,8 @@
 #                          Reduce the number of files returned by azstore_service.get_file_system_client.get_paths
 #     08/24/2021 RLR v1.20 Added a '+cleanup' option for HBVR_DBRK_FILESTORE_OPS to cleanup files
 #     08/25/2021 RLR v1.21 Only cleanup during integrate, not refresh
+#     08/27/2021 RLR v1.22 Re-factored column processing in table method
+#                          Create burst table explicilty instead of as select from target
 #
 ################################################################################
 import sys
@@ -246,7 +248,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.21"
+VERSION = "1.22"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2116,28 +2118,28 @@ def drop_table(table_name):
     trace(1, "Dropping table " + table_name)
     execute_sql(drop_sql, 'Drop')
 
-def create_burst_table(burst_table_name, base_name):
-    create_sql = "CREATE TABLE {0} USING DELTA AS SELECT * FROM {1} WHERE 1=0".format(burst_table_name, base_name)
+def create_burst_table(burst_table_name, columns, col_types, burst_columns):
+    create_sql = "CREATE OR REPLACE TABLE {0} ".format(burst_table_name)
+    create_sql += "("
+    for col in columns:
+        if col in col_types:
+            create_sql += "`{0}` {1},".format(col, col_types[col])
+        else:
+            create_sql += "`{0}` string,".format(col)
+    for col in burst_columns:
+        create_sql += "`{0}` int,".format(col)
+    create_sql = create_sql[:-1]
+    create_sql += ") using DELTA"
     trace(1, "Creating table " + burst_table_name)
     execute_sql(create_sql, 'Create')
-    if options.no_optype_on_target or options.no_isdeleted_on_target:
-        cols = ''
-        if options.no_optype_on_target:
-            cols += "{} integer".format(options.optype)
-        if options.no_isdeleted_on_target:
-            if cols:
-                cols += ", "
-            cols += "{} integer".format(options.isdeleted)
-        alter_sql = 'ALTER TABLE {0} ADD COLUMN ({1})'.format(burst_table_name, cols)
-        trace(1, "Altering table " + burst_table_name)
-        execute_sql(alter_sql, 'Alter')
     if options.load_burst_delay:
         time.sleep(options.load_burst_delay)
 
-def get_col_types(base_name, columns):
-    hvr_columns = []
+def get_col_types(base_name, columns, burst_columns):
+    col_list = []
     for col in columns:
-        hvr_columns.append(col.lower())
+        if not col in burst_columns and not col in options.ignore_columns:
+            col_list.append(col.lower())
     sql_stmt = "DESCRIBE TABLE {0}".format(base_name)
     trace(1, "Describe table " + base_name)
     trace(2, "Execute: {0}".format(sql_stmt))
@@ -2150,13 +2152,13 @@ def get_col_types(base_name, columns):
                 break
             colname = col[0].lower()
             trace(3, "  {0}={1}".format(colname, col))
-            if len(col) > 1 and colname in hvr_columns:
+            if len(col) > 1 and colname in col_list:
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
         print("Desc SQL failed: {1}".format(sql_stmt))
         raise ex
     trace(2, "Column types: {}".format(col_types))
-    return hvr_columns, col_types
+    return col_list, col_types
 
 def set_table_properties(base_name):
     alter_sql = "ALTER TABLE {} SET TBLPROPERTIES ({})".format(base_name, options.set_tblproperties)
@@ -2257,18 +2259,17 @@ def merge_into_target_from_burst(burst_table, target_table, columns, keylist):
     trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
-def define_burst_table(stage_table, target_table, columns, file_list):
-    hvr_columns, col_types = get_col_types(target_table, columns)
+def define_burst_table(stage_table, columns, col_types, burst_columns):
     stage_sql = ''
     stage_sql += "CREATE TABLE {0} ".format(stage_table)
     stage_sql += "("
-    for col in hvr_columns:
+    for col in columns:
         if col in col_types:
             stage_sql += "`{0}` {1},".format(col, col_types[col])
-        elif col == options.optype or col == options.isdeleted:
-            stage_sql += "`{0}` int,".format(col)
         else:
             stage_sql += "`{0}` string,".format(col)
+    for col in burst_columns:
+        stage_sql += "`{0}` int,".format(col)
     stage_sql = stage_sql[:-1]
     stage_sql += ") using {} ".format(options.file_format)
     if options.filestore == FileStore.AZURE_BLOB or (options.filestore == FileStore.ADLS_G2 and options.use_wasb):
@@ -2285,11 +2286,11 @@ def define_burst_table(stage_table, target_table, columns, file_list):
     trace(1, "Creating unmanaged burst table {0}".format(stage_table))
     execute_sql(stage_sql, 'Create')
 
-def do_copy_into_sql(load_table, target_table, hvr_columns, col_types, file_list):
+def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list):
     copy_sql = ''
     copy_sql += "COPY INTO {0} FROM ".format(load_table)
     copy_sql += "(SELECT "
-    for col in hvr_columns:
+    for col in columns:
         if col in col_types:
             type_func = col_types[col]
             if '(' in type_func:
@@ -2298,6 +2299,8 @@ def do_copy_into_sql(load_table, target_table, hvr_columns, col_types, file_list
                 copy_sql += "{0}(`{1}`),".format(type_func, col)
         else:
             copy_sql += "`{0}`,".format(col)
+    for col in burst_columns:
+        copy_sql += "`{0}`,".format(col)
     copy_sql = copy_sql[:-1]
     if options.filestore == FileStore.AZURE_BLOB or (options.filestore == FileStore.ADLS_G2 and options.use_wasb):
         copy_sql += " FROM 'wasbs://{0}@{1}.blob.core.windows.net/') ".format(options.container, options.resource)
@@ -2321,21 +2324,21 @@ def do_copy_into_sql(load_table, target_table, hvr_columns, col_types, file_list
     trace(1, "Copying from the file store into " + load_table)
     execute_sql(copy_sql, 'Copy')
 
-def copy_into_delta_table(load_table, target_table, columns, file_list):
+def copy_into_delta_table(load_table, columns, col_types, burst_columns, file_list):
     MAX_COPY_FILES = 1000
-    hvr_columns, col_types = get_col_types(target_table, columns)
     if len(file_list) <= MAX_COPY_FILES:
-        do_copy_into_sql(load_table, target_table, hvr_columns, col_types, file_list)
+        do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list)
         return
     for slice in range(0, 1+int(len(file_list)/MAX_COPY_FILES)):
         trace(3, "COPY INTO files {} to {}".format(slice, (slice*MAX_COPY_FILES), (slice+1)*MAX_COPY_FILES-1))
-        do_copy_into_sql(load_table, target_table, hvr_columns, col_types, file_list[(slice*MAX_COPY_FILES):(slice+1)*MAX_COPY_FILES])
+        do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list[(slice*MAX_COPY_FILES):(slice+1)*MAX_COPY_FILES])
 
 def process_table(tab_entry, file_list, numrows):
     global file_counter
     
     target_table = tab_entry[0]
     columns = tab_entry[2].split(",")
+    burst_columns = []
     load_table = target_table
 
     t = [0,0,0,0,0,0,0]
@@ -2348,24 +2351,16 @@ def process_table(tab_entry, file_list, numrows):
     use_burst_logic = options.mode == "integ_end" and not options.target_is_timekey
     if use_burst_logic:
         load_table += '__bur'
-    else:
         if options.no_optype_on_target:
-            if options.optype in columns:
-                columns.remove(options.optype)
+            burst_columns.append(options.optype)
         if options.no_isdeleted_on_target:
-            if options.isdeleted in columns:
-                columns.remove(options.isdeleted)
+            burst_columns.append(options.isdeleted)
+    else:
         for ignore in options.ignore_columns:
             if ignore in columns:
                 columns.remove(ignore)
 
-    if use_burst_logic:
-        drop_table(load_table)
-        if options.burst_table_set_of_files:
-            define_burst_table(load_table, target_table, columns, file_list)
-        else:
-            create_burst_table(load_table, target_table)
-    else:
+    if not use_burst_logic:
         if options.mode == "refr_write_end":
             if refresh_options.job_name and refresh_options.slices_done > 1:
                 trace(1, "First slice has already refreshed, disabling create/truncate target table")
@@ -2380,10 +2375,20 @@ def process_table(tab_entry, file_list, numrows):
                     truncate_table(target_table)
                 if options.set_tblproperties:
                     set_table_properties(target_table)
+
+    columns, col_types = get_col_types(target_table, columns, burst_columns)
+
+    if use_burst_logic:
+        drop_table(load_table)
+        if options.burst_table_set_of_files:
+            define_burst_table(load_table, columns, col_types, burst_columns)
+        else:
+            create_burst_table(load_table, columns, col_types, burst_columns)
+
     t[2] = timer()
 
     if not use_burst_logic or not options.burst_table_set_of_files:
-        copy_into_delta_table(load_table, target_table, columns, file_list)
+        copy_into_delta_table(load_table, columns, col_types, burst_columns, file_list)
     t[3] = timer()
 
     if use_burst_logic:
@@ -2421,7 +2426,7 @@ def process_table(tab_entry, file_list, numrows):
             if options.truncate_target_on_refresh:
                 init_clause = " truncate target: {0:.2f}s,".format(t[2]-t[1])
             if options.recreate_tables_on_refresh:
-                init_clause = " create targe: {0:.2f}s,".format(t[2]-t[1])
+                init_clause = " create target: {0:.2f}s,".format(t[2]-t[1])
             trace(0, "Refresh of '{0}', {1} rows, took {2:.2f} seconds:"
                      "{3}"
                      " copy into target: {4:.2f}s".format(target_table, numrows, t[6]-t[0], init_clause, t[3]-t[2]))
