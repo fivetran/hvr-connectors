@@ -20,6 +20,9 @@
 #                    if specified with "-D", the target table has this column
 #     -E <envvar>  - pass an environment variable
 #     -i <collist> - if '-r', these (Extra) columns are not in target
+#     -n - use INSERT for DML inserts insetad of MERGE.   This could improve 
+#          perofromance but potentially cause OOS after a refresh.  The MERGE 
+#          statement is Resilient.   Tables in Databricks do not have a UK.
 #     -o <name>    - name of the hvr_op column, default is 'op_type'
 #     -O <name>    - name of the hvr_op column, default is 'op_type'
 #                    if specified with "-O", the target table has this column
@@ -27,7 +30,6 @@
 #     -r - create (re-create) tables during refresh    
 #     -t - target is timekey
 #     -w - use wasb syntax for files in adls file system
-#     -y - skip filestore operations
 #
 # ENVIRONMENT VARIABLES
 #     The following environment variables are required for correct operation of
@@ -234,6 +236,7 @@
 #     08/25/2021 RLR v1.21 Only cleanup during integrate, not refresh
 #     08/27/2021 RLR v1.22 Re-factored column processing in table method
 #                          Create burst table explicilty instead of as select from target
+#     09/01/2021 RLR v1.23 Added an option (-n) to apply inserts using INSERT sql instead of MERGE
 #
 ################################################################################
 import sys
@@ -248,7 +251,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.22"
+VERSION = "1.23"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -322,6 +325,7 @@ class Options:
     filestore_ops = DEFAULT_FILEOPS
     other_files_in_loc = []
     recreate_tables_on_refresh = False
+    insert_after_merge_dels_and_upds = False
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -573,6 +577,8 @@ def trace_input():
     trace(3, "Create burst as unmanaged table = '{}'".format(options.unmanaged_burst))
     if options.load_burst_delay:
         trace(3, "Delay {} seconds after creating the burst table, before loading it".format(options.load_burst_delay))
+    if options.insert_after_merge_dels_and_upds:
+        trace(3, "For CDC MERGE only UPDATES & DELETES; use INSERT sql for INSERTS")
 
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh = {}".format(not options.truncate_target_on_refresh))
@@ -626,7 +632,7 @@ def process_args(argv):
     if len(cmdargs):
         try:
             list_args = cmdargs.split(" ");
-            opts, args = getopt.getopt(list_args,"c:d:D:E:i:o:O:prtwy")
+            opts, args = getopt.getopt(list_args,"c:d:D:E:i:no:O:prtwy")
         except getopt.GetoptError:
             raise Exception("Error parsing command line arguments '" + cmdargs + "' due to invalid argument or invalid syntax")
     
@@ -648,6 +654,8 @@ def process_args(argv):
                     print("Failed {} putting {} in the environment".format(err, arg))
             elif opt == '-i':
                 options.ignore_columns = arg.split(',')
+            elif opt == '-n':
+                options.insert_after_merge_dels_and_upds = True
             elif opt == '-o':
                 options.optype = arg
             elif opt == '-O':
@@ -2215,7 +2223,52 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     trace(1, "{0} multi-deletes in {1}".format(dml, target_table))
     execute_sql(sql, dml)
 
-def merge_into_target_from_burst(burst_table, target_table, columns, keylist):
+def merge_changes_to_target(burst_table, target_table, columns, keys):
+    skip_clause = 'AND b.{} != 0 '.format(options.optype)
+    if options.insert_after_merge_dels_and_upds:
+        skip_clause += ' AND b.{} != 1'.format(options.optype)
+    if multidelete_table(target_table):
+        do_multi_delete(burst_table, target_table, columns, keys)
+        skip_clause = ' AND b.{} != 8'.format(options.optype)
+
+    merge_sql = "MERGE INTO {0} a USING {1} b".format(target_table, burst_table)
+    merge_sql += " ON"
+    for key in keys:
+        merge_sql += " a.`{0}` = b.`{0}` AND".format(key)
+    merge_sql = merge_sql[:-4]
+    if options.no_isdeleted_on_target:
+        merge_sql += " WHEN MATCHED AND b.{} = 0 THEN DELETE".format(options.optype)
+    merge_sql += " WHEN MATCHED {} THEN UPDATE".format(skip_clause)
+    merge_sql += "  SET"
+    for col in columns:
+        merge_sql += " a.`{0}` = b.`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    if not options.insert_after_merge_dels_and_upds:
+        merge_sql += " WHEN NOT MATCHED {} THEN INSERT".format(skip_clause)
+        merge_sql += "  ("
+        for col in columns:
+            merge_sql += "`{0}`,".format(col)
+        merge_sql = merge_sql[:-1]
+        merge_sql += ") VALUES ("
+        for col in columns:
+            merge_sql += "b.`{0}`,".format(col)
+        merge_sql = merge_sql[:-1]
+        merge_sql += ")"
+
+    trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
+    execute_sql(merge_sql, 'Merge')
+
+def apply_inserts(burst_table, target_table, columns):
+    ins_sql = "INSERT INTO {} SELECT ".format(target_table)
+    for col in columns:
+        ins_sql += col + ","
+    ins_sql = ins_sql[:-1]
+    ins_sql += " FROM {} WHERE {} = 1".format(burst_table, options.optype)
+
+    trace(1, "Apply inserts from {} to {}".format(burst_table, target_table))
+    execute_sql(ins_sql, 'Insert')
+
+def apply_burst_table_changes_to_target(burst_table, target_table, columns, keylist):
     if options.no_optype_on_target:
         if options.optype in columns:
             columns.remove(options.optype)
@@ -2228,36 +2281,9 @@ def merge_into_target_from_burst(burst_table, target_table, columns, keylist):
     if options.isdeleted in keys:
         keys.remove(options.isdeleted)
 
-    skip_clause = ''
-    if multidelete_table(target_table):
-        do_multi_delete(burst_table, target_table, columns, keys)
-        skip_clause = 'AND b.op_type != 8'
-
-    merge_sql = "MERGE INTO {0} a USING {1} b".format(target_table, burst_table)
-    merge_sql += " ON"
-    for key in keys:
-        merge_sql += " a.`{0}` = b.`{0}` AND".format(key)
-    merge_sql = merge_sql[:-4]
-    if options.no_isdeleted_on_target:
-        merge_sql += " WHEN MATCHED AND b.{} = 0 THEN DELETE".format(options.optype)
-    merge_sql += " WHEN MATCHED AND b.{0} != 0 {1} THEN UPDATE".format(options.optype, skip_clause)
-    merge_sql += "  SET"
-    for col in columns:
-        merge_sql += " a.`{0}` = b.`{0}`,".format(col)
-    merge_sql = merge_sql[:-1]
-    merge_sql += " WHEN NOT MATCHED AND b.{0} != 0 {1} THEN INSERT".format(options.optype, skip_clause)
-    merge_sql += "  ("
-    for col in columns:
-        merge_sql += "`{0}`,".format(col)
-    merge_sql = merge_sql[:-1]
-    merge_sql += ") VALUES ("
-    for col in columns:
-        merge_sql += "b.`{0}`,".format(col)
-    merge_sql = merge_sql[:-1]
-    merge_sql += ")"
-
-    trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
-    execute_sql(merge_sql, 'Merge')
+    merge_changes_to_target(burst_table, target_table, columns, keys)
+    if options.insert_after_merge_dels_and_upds:
+        apply_inserts(burst_table, target_table, columns)
 
 def define_burst_table(stage_table, columns, col_types, burst_columns):
     stage_sql = ''
@@ -2392,7 +2418,7 @@ def process_table(tab_entry, file_list, numrows):
     t[3] = timer()
 
     if use_burst_logic:
-        merge_into_target_from_burst(load_table, target_table, columns, tab_entry[3])
+        apply_burst_table_changes_to_target(load_table, target_table, columns, tab_entry[3])
         t[4] = timer()
         drop_table(load_table)
         t[5] = timer()

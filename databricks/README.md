@@ -81,6 +81,7 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 |   -d   | Name of the SoftDelete column.  Default is 'is_deleted'.  Set this option if the SoftDelete column is configured <br>with a name other than 'is_deleted'. |
 |   -D   | Name of the SoftDelete column.  Set this option if the SoftDelete column is in the target table. |
 |   -o   | Name of the {hvr_op} column.  Default is ‘op_type’.  Set this option if the name of the Extra column populated by <br>{hvr_op} is different than ‘op_type’. |
+|   -n   | If set, the connector will apply inserts using INSERT SQL instead of MERGE |
 |   -O   | Name of the {hvr_op} column.   Set this option if the target table includes the Extra column. |
 |   -p   | Set this option on a refresh of a TimeKey target if it is desired that the target is not truncated before the refresh. |
 |   -r   | Set this option to instruct the script to create/recreate the target table during Refresh |
@@ -274,3 +275,4 @@ not set table properties during refresh.
 | 1.20    | 08/24/21 | Added a '+cleanup' option for HBVR_DBRK_FILESTORE_OPS to cleanup files |
 | 1.21    | 08/25/21 | Only cleanup during integrate, not refresh |
 | 1.22    | 08/27/21 | Create burst table explicilty instead of as select from target |
+| 1.23    | 09/01/21 | Added an option (-n) to apply inserts using INSERT sql instead of MERGE |
