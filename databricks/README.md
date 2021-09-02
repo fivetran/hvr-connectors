@@ -69,6 +69,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_MULTIDELETE       |     No    | Handle the multi-delete change that is a result of SAPXform |
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
 | HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
+| HVR_DBRK_PARTITION_<table> |     No    | If set, target table is created with partitions columns |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
 | HVR_DBRK_UNMANAGED_BURST   |     No    | Create the burst table unmanaged ('ON'), or managed ('OFF') |
 
@@ -235,6 +236,9 @@ perform the substitution.  For example:
 
 If there are ColumnProperties actions tied to a Context, and that Context is used with the refresh, the "-c" Context should be passed to the connector using the "-c" option.
 
+The table can be configured so that partitioning is defined upon create with HVR_DBRK_PARTITION_<table>.   Set <table> to the HVR table name and set the Value of the Environment action to a comma separated list of columns.  For example:
+       /Name=HVR_DBRK_PARTITION_kc4col /Value=c2,c1
+
 ## Sliced Refresh
 If the environment variable HVR_DBRK_SLICE_REFRESH_ID is set on a refresh, the connector will use locking and control functionality to ensure that the target table is truncated or created only at the beginning, and that only one slice job at a time accesses the target table.  This logic is in conjunction with the hvrslicedrefresh.py script.
 
@@ -276,3 +280,4 @@ not set table properties during refresh.
 | 1.21    | 08/25/21 | Only cleanup during integrate, not refresh |
 | 1.22    | 08/27/21 | Create burst table explicilty instead of as select from target |
 | 1.23    | 09/01/21 | Added an option (-n) to apply inserts using INSERT sql instead of MERGE |
+| 1.24    | 09/02/21 | Added support for partitioning |

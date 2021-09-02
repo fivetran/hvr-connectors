@@ -129,6 +129,9 @@
 #        command line - the 'hubdb' part of the runtime options for many HVR 
 #        commands.   
 #
+#     HVR_DBRK_PARTITION_<tablename> (optional)
+#        Define the partition columns for <tablename>.  Note that this only affects refresh.
+#
 #     HVR_DBRK_TBLPROPERTIES     (optional)
 #        By default the connector sets the following table properties during refresh:
 #            autoOptimize.optimizeWrite = true, autoOptimize.autoCompact = true
@@ -237,6 +240,7 @@
 #     08/27/2021 RLR v1.22 Re-factored column processing in table method
 #                          Create burst table explicilty instead of as select from target
 #     09/01/2021 RLR v1.23 Added an option (-n) to apply inserts using INSERT sql instead of MERGE
+#     09/02/2021 RLR v1.24 Added support for partitioning.
 #
 ################################################################################
 import sys
@@ -251,7 +255,7 @@ import json
 import pyodbc
 from timeit import default_timer as timer
 
-VERSION = "1.23"
+VERSION = "1.24"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -326,6 +330,7 @@ class Options:
     other_files_in_loc = []
     recreate_tables_on_refresh = False
     insert_after_merge_dels_and_upds = False
+    partition_columns = {}
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -469,6 +474,12 @@ def env_load():
     options.agent_env = load_agent_env()
     get_multidelete_map()
 
+    for envname, value in os.environ.items():
+        if envname.startswith('HVR_DBRK_PARTITION_'):
+            tabname = envname[len('HVR_DBRK_PARTITION_'):]
+            collist = value.split(',')
+            options.partition_columns[tabname] = collist
+
     refresh_options.job_name = os.getenv('HVR_DBRK_SLICE_REFRESH_ID', '')
     if refresh_options.job_name:
         num_slices = os.getenv('HVR_VAR_SLICE_TOTAL', '')
@@ -571,6 +582,10 @@ def trace_input():
         trace(3, "Use context '{}' when processing actions that apply to the table".format(options.context))
     if options.ignore_columns:
         trace(3, "These columns are not in the target table: {}".format(options.ignore_columns))
+    if options.recreate_tables_on_refresh and options.partition_columns:
+        trace(3, "Define partitioning during create:")
+        for tab,cols in options.partition_columns.items():
+            trace(3, "   {}:  {}".format(tab, cols))
     trace(3, "Set TBLPROPERTIES during refresh = '{}'".format(options.set_tblproperties))
     if refresh_options.job_name:
         trace(3, "Sliced refresh: total slices={}; slice num={}; slice file={}".format(refresh_options.num_slices, refresh_options.slice_num, refresh_options.done_file))
@@ -1420,7 +1435,7 @@ def get_external_loc(table):
         return options.external_loc.replace('{hvr_tbl_name}', table)
     return options.external_loc
 
-def target_create_table(table, columns):
+def target_create_table(hvr_table, table, columns):
     create_sql = "CREATE OR REPLACE TABLE {} (".format(table)
     sep = ' '
     for col in columns:
@@ -1429,6 +1444,12 @@ def target_create_table(table, columns):
     create_sql += ") USING DELTA"
     if options.external_loc:
         create_sql += " LOCATION '{}'".format(get_external_loc(table))
+    if hvr_table in options.partition_columns.keys():
+        create_sql += " PARTITIONED BY ("
+        for col in options.partition_columns[hvr_table]:
+            create_sql += col + ","
+        create_sql = create_sql[:-1]
+        create_sql += ")"
     if options.set_tblproperties:
         create_sql += " TBLPROPERTIES ({})".format(options.set_tblproperties)
     return create_sql
@@ -2143,30 +2164,58 @@ def create_burst_table(burst_table_name, columns, col_types, burst_columns):
     if options.load_burst_delay:
         time.sleep(options.load_burst_delay)
 
-def get_col_types(base_name, columns, burst_columns):
+def describe_table(table_name, columns, burst_columns):
     col_list = []
     for col in columns:
         if not col in burst_columns and not col in options.ignore_columns:
             col_list.append(col.lower())
-    sql_stmt = "DESCRIBE TABLE {0}".format(base_name)
-    trace(1, "Describe table " + base_name)
+    sql_stmt = "DESCRIBE TABLE {0}".format(table_name)
+    trace(1, "Describe table " + table_name)
     trace(2, "Execute: {0}".format(sql_stmt))
     col_types = {}
+    part_cols = []
+    add_partitions = False
     try:
         Connections.cursor.execute(sql_stmt)
         while True:
             col = Connections.cursor.fetchone()
             if not col:
                 break
+            trace(3, "  {}".format(col))
+            if col[0] == "# Partitioning":
+                add_partitions = True
+                continue
+            if add_partitions:
+                if col[0] == "Not partitioned":
+                    break
+                if col[1]:
+                    part_cols.append(col[1])
+                continue
             colname = col[0].lower()
-            trace(3, "  {0}={1}".format(colname, col))
             if len(col) > 1 and colname in col_list:
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
         print("Desc SQL failed: {1}".format(sql_stmt))
         raise ex
     trace(2, "Column types: {}".format(col_types))
-    return col_list, col_types
+    trace(2, "Partition columns: {}".format(part_cols))
+    return col_list, col_types, part_cols
+
+def get_partition_values(table_name, column):
+    sql_stmt = "SELECT DISTINCT({}) FROM {}".format(column, table_name)
+    trace(1, "Get partition values in burst table {}.{}".format(table_name, column))
+    vlist = ''
+    try:
+        Connections.cursor.execute(sql_stmt)
+        while True:
+            col = Connections.cursor.fetchone()
+            if not col:
+                break
+            vlist += "'{}',".format(col[0])
+            trace(3, "  {0}".format(col))
+    except pyodbc.Error as ex:
+        print("Get partition values SQL failed: {1}".format(sql_stmt))
+    return vlist[:-1]
 
 def set_table_properties(base_name):
     alter_sql = "ALTER TABLE {} SET TBLPROPERTIES ({})".format(base_name, options.set_tblproperties)
@@ -2182,7 +2231,7 @@ def get_create_table_ddl(hvr_table, target_name, columns):
            columns = apply_column_property(hvr_table, colprop, columns)
     trace(2, '')
     show_columns(columns)
-    return target_create_table(target_name, columns)
+    return target_create_table(hvr_table, target_name, columns)
 
 def recreate_target_table(hvr_table):
     #  get the create table DDL - only drop when successful
@@ -2223,7 +2272,7 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     trace(1, "{0} multi-deletes in {1}".format(dml, target_table))
     execute_sql(sql, dml)
 
-def merge_changes_to_target(burst_table, target_table, columns, keys):
+def merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
     skip_clause = 'AND b.{} != 0 '.format(options.optype)
     if options.insert_after_merge_dels_and_upds:
         skip_clause += ' AND b.{} != 1'.format(options.optype)
@@ -2233,6 +2282,10 @@ def merge_changes_to_target(burst_table, target_table, columns, keys):
 
     merge_sql = "MERGE INTO {0} a USING {1} b".format(target_table, burst_table)
     merge_sql += " ON"
+    for col in partition_cols:
+        plist = get_partition_values(burst_table, col)
+        if plist:
+            merge_sql += " a.{} IN ({}) AND".format(col, plist)
     for key in keys:
         merge_sql += " a.`{0}` = b.`{0}` AND".format(key)
     merge_sql = merge_sql[:-4]
@@ -2268,7 +2321,7 @@ def apply_inserts(burst_table, target_table, columns):
     trace(1, "Apply inserts from {} to {}".format(burst_table, target_table))
     execute_sql(ins_sql, 'Insert')
 
-def apply_burst_table_changes_to_target(burst_table, target_table, columns, keylist):
+def apply_burst_table_changes_to_target(burst_table, target_table, columns, keylist, partition_cols):
     if options.no_optype_on_target:
         if options.optype in columns:
             columns.remove(options.optype)
@@ -2281,7 +2334,7 @@ def apply_burst_table_changes_to_target(burst_table, target_table, columns, keyl
     if options.isdeleted in keys:
         keys.remove(options.isdeleted)
 
-    merge_changes_to_target(burst_table, target_table, columns, keys)
+    merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
     if options.insert_after_merge_dels_and_upds:
         apply_inserts(burst_table, target_table, columns)
 
@@ -2402,7 +2455,7 @@ def process_table(tab_entry, file_list, numrows):
                 if options.set_tblproperties:
                     set_table_properties(target_table)
 
-    columns, col_types = get_col_types(target_table, columns, burst_columns)
+    columns, col_types, partition_cols = describe_table(target_table, columns, burst_columns)
 
     if use_burst_logic:
         drop_table(load_table)
@@ -2418,7 +2471,7 @@ def process_table(tab_entry, file_list, numrows):
     t[3] = timer()
 
     if use_burst_logic:
-        apply_burst_table_changes_to_target(load_table, target_table, columns, tab_entry[3])
+        apply_burst_table_changes_to_target(load_table, target_table, columns, tab_entry[3], partition_cols)
         t[4] = timer()
         drop_table(load_table)
         t[5] = timer()
