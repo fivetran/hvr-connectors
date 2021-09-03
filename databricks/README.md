@@ -67,9 +67,10 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
 | HVR_DBRK_LOAD_BURST_DELAY  |     No    | Delay, in seconds, after creating the burst table and before loading |
 | HVR_DBRK_MULTIDELETE       |     No    | Handle the multi-delete change that is a result of SAPXform |
+| HVR_DBRK_PARALLEL          |     No    | Number of parallel processes processing table changes |
+| HVR_DBRK_PARTITION_<table> |     No    | If set, target table is created with partitions columns |
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
 | HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
-| HVR_DBRK_PARTITION_<table> |     No    | If set, target table is created with partitions columns |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
 | HVR_DBRK_UNMANAGED_BURST   |     No    | Create the burst table unmanaged ('ON'), or managed ('OFF') |
 
@@ -280,4 +281,4 @@ not set table properties during refresh.
 | 1.21    | 08/25/21 | Only cleanup during integrate, not refresh |
 | 1.22    | 08/27/21 | Create burst table explicilty instead of as select from target |
 | 1.23    | 09/01/21 | Added an option (-n) to apply inserts using INSERT sql instead of MERGE |
-| 1.24    | 09/02/21 | Added support for partitioning |
+| 1.24    | 09/01/21 | Added support for parallel processing |

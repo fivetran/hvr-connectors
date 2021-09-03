@@ -132,6 +132,9 @@
 #     HVR_DBRK_PARTITION_<tablename> (optional)
 #        Define the partition columns for <tablename>.  Note that this only affects refresh.
 #
+#     HVR_DBRK_PARALLEL          (optional)
+#        If set, the tables will be processed in parallel.
+#
 #     HVR_DBRK_TBLPROPERTIES     (optional)
 #        By default the connector sets the following table properties during refresh:
 #            autoOptimize.optimizeWrite = true, autoOptimize.autoCompact = true
@@ -241,6 +244,7 @@
 #                          Create burst table explicilty instead of as select from target
 #     09/01/2021 RLR v1.23 Added an option (-n) to apply inserts using INSERT sql instead of MERGE
 #     09/02/2021 RLR v1.24 Added support for partitioning.
+#     09/02/2021 RLR v1.25 Added support for parallel processing.
 #
 ################################################################################
 import sys
@@ -254,8 +258,9 @@ import subprocess
 import json
 import pyodbc
 from timeit import default_timer as timer
+import multiprocessing
 
-VERSION = "1.24"
+VERSION = "1.25"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -331,6 +336,7 @@ class Options:
     recreate_tables_on_refresh = False
     insert_after_merge_dels_and_upds = False
     partition_columns = {}
+    parallel_count = 0
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -349,7 +355,10 @@ refresh_options = RefreshOptions()
 
 def trace(level, msg):
     if options.trace >= level:
-        print(msg)
+        if not multiprocessing.current_process()._identity:
+            print(msg)
+        else:
+            print("p{}: {}".format(multiprocessing.current_process()._identity[0], msg))
         sys.stdout.flush() 
 
 def version_normalizer(version):
@@ -480,6 +489,13 @@ def env_load():
             collist = value.split(',')
             options.partition_columns[tabname] = collist
 
+    parallel = os.getenv('HVR_DBRK_PARALLEL', '')
+    if parallel:
+        try:
+            options.parallel_count = int(parallel)
+        except Exception as err:
+            raise Exception("Invalid value '{}' defined for HVR_DBRK_PARALLEL".format(parallel))
+
     refresh_options.job_name = os.getenv('HVR_DBRK_SLICE_REFRESH_ID', '')
     if refresh_options.job_name:
         num_slices = os.getenv('HVR_VAR_SLICE_TOTAL', '')
@@ -587,6 +603,8 @@ def trace_input():
         for tab,cols in options.partition_columns.items():
             trace(3, "   {}:  {}".format(tab, cols))
     trace(3, "Set TBLPROPERTIES during refresh = '{}'".format(options.set_tblproperties))
+    if options.parallel_count:
+        trace(3, "Apply changes in parallel, {} tables at a time".format(options.parallel_count))
     if refresh_options.job_name:
         trace(3, "Sliced refresh: total slices={}; slice num={}; slice file={}".format(refresh_options.num_slices, refresh_options.slice_num, refresh_options.done_file))
     trace(3, "Create burst as unmanaged table = '{}'".format(options.unmanaged_burst))
@@ -1741,6 +1759,7 @@ def file_for_table(tablename, filename, fileext):
     return False
 
 def table_file_name_map():
+    global file_counter
     # build search map
 
     hvr_tbl_names = options.agent_env['HVR_TBL_NAMES'].split(":")
@@ -1755,6 +1774,7 @@ def table_file_name_map():
     if rows:
         rows = rows.split(":")
 
+    total_files = 0
     tbl_map = {}
     num_rows = {}
     suffix = "." + options.file_format
@@ -1773,6 +1793,10 @@ def table_file_name_map():
             for idx in reversed(pop_list):
                 files.pop(idx)
                 rows.pop(idx)
+            total_files += len(tbl_map[item])
+
+    if options.parallel_count:
+        file_counter = total_files
 
     if files :  
         raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
@@ -2512,11 +2536,32 @@ def process_table(tab_entry, file_list, numrows):
         else:
             trace(0, "Copy of {0} rows into {1} took {2:.2f} seconds".format(numrows, target_table, t[5]-t[0]))
 
+def process_tables_serially(table_map, num_rows):
+    print("Subprocess {}".format(multiprocessing.current_process()._identity))
+    for t in table_map:
+        process_table(t, table_map[t], num_rows[t])
+
+def pool_process_unpack(args):
+    return call_process_table(*args)
+
+def call_process_table(tab_entry, table_map, num_rows):
+    process_table(tab_entry, table_map[tab_entry], num_rows[tab_entry])
+
+def process_tables_in_parallel(table_map, num_rows):
+    import contextlib
+    from multiprocessing import Pool
+
+    trace(1, "Process in parallel {}".format(options.parallel_count))
+    with contextlib.closing(Pool(options.parallel_count)) as p:
+        p.map(pool_process_unpack,[(t,table_map,num_rows) for t in table_map])
+
 def process_tables():
-    tbl_map, num_rows = table_file_name_map()
+    table_map,num_rows = table_file_name_map()
     try:
-        for t in tbl_map:
-            process_table(t, tbl_map[t], num_rows[t])
+        if options.parallel_count:
+            process_tables_in_parallel(table_map, num_rows)
+        else:
+            process_tables_serially(table_map, num_rows)
     finally:        
         Connections.cursor.close()
         Connections.odbc.close()
@@ -2531,6 +2576,7 @@ def process(argv):
     if ((options.mode == "refr_write_end" or options.mode == "integ_end") and
          os.getenv('HVR_FILE_NAMES') != ''):
 
+        start = timer()
         if refresh_options.job_name:
             lock(refresh_options.lock_file)
             refresh_options.slices_done = get_slices_done()
@@ -2546,7 +2592,7 @@ def process(argv):
                 cleanup_job_files()
 
         if (file_counter > 0) :
-            print("Successfully processed {0:d} file(s)".format(file_counter))
+            print("Successfully processed {0:d} file(s) in {1} seconds".format(file_counter, int(timer()-start)))
 
     if options.channel_export:
         os.remove(options.channel_export)
