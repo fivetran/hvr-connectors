@@ -245,7 +245,7 @@
 #     09/01/2021 RLR v1.23 Added an option (-n) to apply inserts using INSERT sql instead of MERGE
 #     09/02/2021 RLR v1.24 Added support for partitioning.
 #     09/02/2021 RLR v1.25 Added support for parallel processing.
-#     09/03/2021 RLR v1.26 Refactored the MERGE SQL
+#     09/03/2021 RLR v1.26 Refactored the MERGE SQL, INSERT SQL
 #
 ################################################################################
 import sys
@@ -2342,9 +2342,21 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
     trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
-def apply_inserts(burst_table, target_table, columns):
-    ins_sql = "INSERT INTO {} SELECT ".format(target_table)
+def apply_inserts(burst_table, target_table, columns, partition_cols):
+    if not partition_cols:
+        partspec = ''
+    else:
+        partspec = " PARTITION ("
+        for col in partition_cols:
+            partspec += col + ','
+        partspec = partspec[:-1]
+        partspec += ")"
+
+    ins_sql = "INSERT INTO {} {} SELECT ".format(target_table, partspec)
     for col in columns:
+        if not col in partition_cols:
+            ins_sql += col + ","
+    for col in partition_cols:
         ins_sql += col + ","
     ins_sql = ins_sql[:-1]
     ins_sql += " FROM {} WHERE {} = 1".format(burst_table, options.optype)
@@ -2367,7 +2379,7 @@ def apply_burst_table_changes_to_target(burst_table, target_table, columns, keyl
 
     merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
     if options.insert_after_merge_dels_and_upds:
-        apply_inserts(burst_table, target_table, columns)
+        apply_inserts(burst_table, target_table, columns, partition_cols)
 
 def define_burst_table(stage_table, columns, col_types, burst_columns):
     stage_sql = ''

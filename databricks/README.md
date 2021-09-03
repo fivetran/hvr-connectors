@@ -283,4 +283,4 @@ not set table properties during refresh.
 | 1.23    | 09/01/21 | Added an option (-n) to apply inserts using INSERT sql instead of MERGE |
 | 1.24    | 09/02/21 | Added support for partitioning |
 | 1.25    | 09/02/21 | Added support for parallel processing |
-| 1.26    | 09/03/21 | Refactored the MERGE SQL |
+| 1.26    | 09/03/21 | Refactored the MERGE SQL, INSERT SQL |
