@@ -245,6 +245,7 @@
 #     09/01/2021 RLR v1.23 Added an option (-n) to apply inserts using INSERT sql instead of MERGE
 #     09/02/2021 RLR v1.24 Added support for partitioning.
 #     09/02/2021 RLR v1.25 Added support for parallel processing.
+#     09/03/2021 RLR v1.26 Refactored the MERGE SQL
 #
 ################################################################################
 import sys
@@ -260,7 +261,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.25"
+VERSION = "1.26"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2297,28 +2298,34 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     execute_sql(sql, dml)
 
 def merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
-    skip_clause = 'AND b.{} != 0 '.format(options.optype)
+    skip_clause = 'AND m.{} != 0 '.format(options.optype)
     if options.insert_after_merge_dels_and_upds:
-        skip_clause += ' AND b.{} != 1'.format(options.optype)
+        skip_clause += ' AND m.{} != 1'.format(options.optype)
     if multidelete_table(target_table):
         do_multi_delete(burst_table, target_table, columns, keys)
-        skip_clause = ' AND b.{} != 8'.format(options.optype)
+        skip_clause = ' AND m.{} != 8'.format(options.optype)
 
-    merge_sql = "MERGE INTO {0} a USING {1} b".format(target_table, burst_table)
-    merge_sql += " ON"
+    merge_keys = keys
     for col in partition_cols:
-        plist = get_partition_values(burst_table, col)
-        if plist:
-            merge_sql += " a.{} IN ({}) AND".format(col, plist)
-    for key in keys:
-        merge_sql += " a.`{0}` = b.`{0}` AND".format(key)
+        if not col in merge_keys:
+            merge_keys.append(col)
+
+    merge_sql = "MERGE INTO {0} a USING (".format(target_table)
+    merge_sql += " SELECT "
+    for key in merge_keys:
+        merge_sql += " b.`{0}` as merge{0},".format(key)
+    merge_sql += " b.* FROM {} b".format(burst_table)
+    merge_sql += ") m "
+    merge_sql += " ON"
+    for key in merge_keys:
+        merge_sql += " a.`{0}` = merge{0} AND".format(key)
     merge_sql = merge_sql[:-4]
     if options.no_isdeleted_on_target:
-        merge_sql += " WHEN MATCHED AND b.{} = 0 THEN DELETE".format(options.optype)
+        merge_sql += " WHEN MATCHED AND m.{} = 0 THEN DELETE".format(options.optype)
     merge_sql += " WHEN MATCHED {} THEN UPDATE".format(skip_clause)
     merge_sql += "  SET"
     for col in columns:
-        merge_sql += " a.`{0}` = b.`{0}`,".format(col)
+        merge_sql += " a.`{0}` = m.`{0}`,".format(col)
     merge_sql = merge_sql[:-1]
     if not options.insert_after_merge_dels_and_upds:
         merge_sql += " WHEN NOT MATCHED {} THEN INSERT".format(skip_clause)
@@ -2328,7 +2335,7 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
         merge_sql = merge_sql[:-1]
         merge_sql += ") VALUES ("
         for col in columns:
-            merge_sql += "b.`{0}`,".format(col)
+            merge_sql += "m.`{0}`,".format(col)
         merge_sql = merge_sql[:-1]
         merge_sql += ")"
 
@@ -2537,7 +2544,6 @@ def process_table(tab_entry, file_list, numrows):
             trace(0, "Copy of {0} rows into {1} took {2:.2f} seconds".format(numrows, target_table, t[5]-t[0]))
 
 def process_tables_serially(table_map, num_rows):
-    print("Subprocess {}".format(multiprocessing.current_process()._identity))
     for t in table_map:
         process_table(t, table_map[t], num_rows[t])
 
