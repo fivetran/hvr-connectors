@@ -237,11 +237,11 @@ perform the substitution.  For example:
 
 If there are ColumnProperties actions tied to a Context, and that Context is used with the refresh, the "-c" Context should be passed to the connector using the "-c" option.
 
-The table can be configured so that partitioning is defined upon create with HVR_DBRK_PARTITION_<table>.   Set <table> to the HVR table name and set the Value of the Environment action to a comma separated list of columns.  For example:
+The table can be configured so that partitioning is defined upon create with HVR_DBRK_PARTITION_table.   Set "table" to the HVR table name and set the Value of the Environment action to a comma separated list of columns.  For example:
        /Name=HVR_DBRK_PARTITION_kc4col /Value=c2,c1
 
-# A note on wildcards
-The connector will associate a ColumnProperties action with a table if ColumnProperties /Table is defined with 1) the actual table name, 2) a wildcard matching all tablenames ('*'), 3) a specification matching the beginning of the name ('asdf*'), or 4) a specification matching the end of a name ('*asdf').   The connector cannot match any other wildcarded name specification.   This is also true for the <table> used in HVR_DBRK_PARTITION_<table>.  The Environment Variable can be used to define partitioning where <table> is the actual table name, <table> = '*', <table> = 'asdf*', or table = '*asdf'.
+## A note on wildcards
+The connector will associate a ColumnProperties action with a table if ColumnProperties /Table is defined with 1) the actual table name, 2) a wildcard matching all tablenames ('*'), 3) a specification matching the beginning of the name ('asdf*'), or 4) a specification matching the end of a name ('*asdf').   The connector cannot match any other wildcarded name specification.   This is also true for the "table" used in HVR_DBRK_PARTITION_table.  The Environment Variable can be used to define partitioning where "table" is the actual table name, "table" = '*', "table" = 'asdf*', or "table" = '*asdf'.
 
 ## Sliced Refresh
 If the environment variable HVR_DBRK_SLICE_REFRESH_ID is set on a refresh, the connector will use locking and control functionality to ensure that the target table is truncated or created only at the beginning, and that only one slice job at a time accesses the target table.  This logic is in conjunction with the hvrslicedrefresh.py script.
