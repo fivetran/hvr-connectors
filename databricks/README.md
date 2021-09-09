@@ -68,7 +68,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_LOAD_BURST_DELAY  |     No    | Delay, in seconds, after creating the burst table and before loading |
 | HVR_DBRK_MULTIDELETE       |     No    | Handle the multi-delete change that is a result of SAPXform |
 | HVR_DBRK_PARALLEL          |     No    | Number of parallel processes processing table changes |
-| HVR_DBRK_PARTITION_<table> |     No    | If set, target table is created with partitions columns |
+| HVR_DBRK_PARTITION_table   |     No    | If set, target table is created with partitions columns |
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
 | HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
