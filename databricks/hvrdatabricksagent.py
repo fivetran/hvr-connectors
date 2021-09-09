@@ -246,6 +246,7 @@
 #     09/02/2021 RLR v1.24 Added support for partitioning.
 #     09/02/2021 RLR v1.25 Added support for parallel processing.
 #     09/03/2021 RLR v1.26 Refactored the MERGE SQL, INSERT SQL
+#     09/09/2021 RLR v1.27 Added support for wildcards in partitioning spec
 #
 ################################################################################
 import sys
@@ -261,7 +262,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.26"
+VERSION = "1.27"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1367,6 +1368,22 @@ def breakup_length(lenval):
         return lenval,''
     return lenval[:comma],lenval[comma+1:]
 
+def table_matches(configured, value):
+    matches = False
+    if configured == '*':
+        matches =  True
+    elif configured[0] == '*' and value.endswith(configured[1:]):
+        matches =  True
+    elif configured.endswith("*") and value.startswith(configured[:-1]):
+        matches =  True
+    else:
+        try:
+            matches = re.match(re.escape(configured), value) is not None
+        except Exception as ex:
+            print("Skipping ColumnProperties action configured for {}, regex match failed with {}".format(configured, ex))
+    trace(2, "ColumnProperties configured for table '{}' matching '{}': {}".format(configured, value, matches))
+    return matches
+
 def remove_identity(ctype):
     if len(ctype) > len(' identity'):
         if ctype[-9:] == ' identity':
@@ -1454,6 +1471,17 @@ def get_external_loc(table):
         return options.external_loc.replace('{hvr_tbl_name}', table)
     return options.external_loc
 
+def get_partition_columns(tablename):
+    if tablename in options.partition_columns.keys():
+        return options.partition_columns[tablename]
+    for tabspec,cols in options.partition_columns.items():
+        if tabspec != '*' and table_matches(tabspec, tablename):
+            return cols
+    for tabspec,cols in options.partition_columns.items():
+        if tabspec == '*':
+            return cols
+    return []
+    
 def target_create_table(hvr_table, table, columns):
     create_sql = "CREATE OR REPLACE TABLE {} (".format(table)
     sep = ' '
@@ -1463,9 +1491,10 @@ def target_create_table(hvr_table, table, columns):
     create_sql += ") USING DELTA"
     if options.external_loc:
         create_sql += " LOCATION '{}'".format(get_external_loc(table))
-    if hvr_table in options.partition_columns.keys():
+    partition_cols = get_partition_columns(hvr_table)
+    if partition_cols:
         create_sql += " PARTITIONED BY ("
-        for col in options.partition_columns[hvr_table]:
+        for col in partition_cols:
             create_sql += col + ","
         create_sql = create_sql[:-1]
         create_sql += ")"
@@ -2252,7 +2281,7 @@ def get_create_table_ddl(hvr_table, target_name, columns):
         raise Exception("No columns found in the repository for table {}".format(hvr_table))
     show_columns(columns)
     for colprop in g_column_props:
-       if colprop[C_TBL] == "*" or colprop[C_TBL] == hvr_table:
+       if table_matches(colprop[C_TBL], hvr_table):
            columns = apply_column_property(hvr_table, colprop, columns)
     trace(2, '')
     show_columns(columns)

@@ -240,6 +240,9 @@ If there are ColumnProperties actions tied to a Context, and that Context is use
 The table can be configured so that partitioning is defined upon create with HVR_DBRK_PARTITION_<table>.   Set <table> to the HVR table name and set the Value of the Environment action to a comma separated list of columns.  For example:
        /Name=HVR_DBRK_PARTITION_kc4col /Value=c2,c1
 
+# A note on wildcards
+The connector will associate a ColumnProperties action with a table if ColumnProperties /Table is defined with 1) the actual table name, 2) a wildcard matching all tablenames ('*'), 3) a specification matching the beginning of the name ('asdf*'), or 4) a specification matching the end of a name ('*asdf').   The connector cannot match any other wildcarded name specification.   This is also true for the <table> used in HVR_DBRK_PARTITION_<table>.  The Environment Variable can be used to define partitioning where <table> is the actual table name, <table> = '*', <table> = 'asdf*', or table = '*asdf'.
+
 ## Sliced Refresh
 If the environment variable HVR_DBRK_SLICE_REFRESH_ID is set on a refresh, the connector will use locking and control functionality to ensure that the target table is truncated or created only at the beginning, and that only one slice job at a time accesses the target table.  This logic is in conjunction with the hvrslicedrefresh.py script.
 
@@ -284,3 +287,4 @@ not set table properties during refresh.
 | 1.24    | 09/02/21 | Added support for partitioning |
 | 1.25    | 09/02/21 | Added support for parallel processing |
 | 1.26    | 09/03/21 | Refactored the MERGE SQL, INSERT SQL |
+| 1.27    | 09/09/21 | Added support for wildcards in partitioning spec |
