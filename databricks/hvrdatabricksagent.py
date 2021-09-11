@@ -247,6 +247,7 @@
 #     09/02/2021 RLR v1.25 Added support for parallel processing.
 #     09/03/2021 RLR v1.26 Refactored the MERGE SQL, INSERT SQL
 #     09/09/2021 RLR v1.27 Added support for wildcards in partitioning spec
+#     09/10/2021 RLR v1.28 Use target column ordering for select clause of INSERT SQL
 #
 ################################################################################
 import sys
@@ -262,7 +263,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.27"
+VERSION = "1.28"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2228,6 +2229,7 @@ def describe_table(table_name, columns, burst_columns):
     trace(2, "Execute: {0}".format(sql_stmt))
     col_types = {}
     part_cols = []
+    targ_cols = []
     add_partitions = False
     try:
         Connections.cursor.execute(sql_stmt)
@@ -2247,13 +2249,15 @@ def describe_table(table_name, columns, burst_columns):
                 continue
             colname = col[0].lower()
             if len(col) > 1 and colname in col_list:
+                targ_cols.append(colname)
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
         print("Desc SQL failed: {1}".format(sql_stmt))
         raise ex
     trace(2, "Column types: {}".format(col_types))
     trace(2, "Partition columns: {}".format(part_cols))
-    return col_list, col_types, part_cols
+    trace(2, "Target columns: {}".format(targ_cols))
+    return col_list, col_types, part_cols, targ_cols
 
 def get_partition_values(table_name, column):
     sql_stmt = "SELECT DISTINCT({}) FROM {}".format(column, table_name)
@@ -2383,9 +2387,6 @@ def apply_inserts(burst_table, target_table, columns, partition_cols):
 
     ins_sql = "INSERT INTO {} {} SELECT ".format(target_table, partspec)
     for col in columns:
-        if not col in partition_cols:
-            ins_sql += col + ","
-    for col in partition_cols:
         ins_sql += col + ","
     ins_sql = ins_sql[:-1]
     ins_sql += " FROM {} WHERE {} = 1".format(burst_table, options.optype)
@@ -2393,7 +2394,7 @@ def apply_inserts(burst_table, target_table, columns, partition_cols):
     trace(1, "Apply inserts from {} to {}".format(burst_table, target_table))
     execute_sql(ins_sql, 'Insert')
 
-def apply_burst_table_changes_to_target(burst_table, target_table, columns, keylist, partition_cols):
+def apply_burst_table_changes_to_target(burst_table, target_table, columns, keylist, partition_cols, target_cols):
     if options.no_optype_on_target:
         if options.optype in columns:
             columns.remove(options.optype)
@@ -2408,7 +2409,7 @@ def apply_burst_table_changes_to_target(burst_table, target_table, columns, keyl
 
     merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
     if options.insert_after_merge_dels_and_upds:
-        apply_inserts(burst_table, target_table, columns, partition_cols)
+        apply_inserts(burst_table, target_table, target_cols, partition_cols)
 
 def define_burst_table(stage_table, columns, col_types, burst_columns):
     stage_sql = ''
@@ -2527,7 +2528,7 @@ def process_table(tab_entry, file_list, numrows):
                 if options.set_tblproperties:
                     set_table_properties(target_table)
 
-    columns, col_types, partition_cols = describe_table(target_table, columns, burst_columns)
+    columns, col_types, partition_cols, target_cols = describe_table(target_table, columns, burst_columns)
 
     if use_burst_logic:
         drop_table(load_table)
@@ -2543,7 +2544,7 @@ def process_table(tab_entry, file_list, numrows):
     t[3] = timer()
 
     if use_burst_logic:
-        apply_burst_table_changes_to_target(load_table, target_table, columns, tab_entry[3], partition_cols)
+        apply_burst_table_changes_to_target(load_table, target_table, columns, tab_entry[3], partition_cols, target_cols)
         t[4] = timer()
         drop_table(load_table)
         t[5] = timer()

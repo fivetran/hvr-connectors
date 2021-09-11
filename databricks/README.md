@@ -288,3 +288,4 @@ not set table properties during refresh.
 | 1.25    | 09/02/21 | Added support for parallel processing |
 | 1.26    | 09/03/21 | Refactored the MERGE SQL, INSERT SQL |
 | 1.27    | 09/09/21 | Added support for wildcards in partitioning spec |
+| 1.28    | 09/10/21 | Use target column ordering for select clause of INSERT SQL |
