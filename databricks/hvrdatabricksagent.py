@@ -248,6 +248,7 @@
 #     09/03/2021 RLR v1.26 Refactored the MERGE SQL, INSERT SQL
 #     09/09/2021 RLR v1.27 Added support for wildcards in partitioning spec
 #     09/10/2021 RLR v1.28 Use target column ordering for select clause of INSERT SQL
+#     09/15/2021 RLR v1.29 Re-introduced logic that removes non-burst columns if refresh
 #
 ################################################################################
 import sys
@@ -263,7 +264,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.28"
+VERSION = "1.29"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2254,6 +2255,7 @@ def describe_table(table_name, columns, burst_columns):
     except pyodbc.Error as ex:
         print("Desc SQL failed: {1}".format(sql_stmt))
         raise ex
+    trace(2, "Columns: {}".format(col_list))
     trace(2, "Column types: {}".format(col_types))
     trace(2, "Partition columns: {}".format(part_cols))
     trace(2, "Target columns: {}".format(targ_cols))
@@ -2508,6 +2510,12 @@ def process_table(tab_entry, file_list, numrows):
         if options.no_isdeleted_on_target:
             burst_columns.append(options.isdeleted)
     else:
+        if options.no_optype_on_target:
+            if options.optype in columns:
+                columns.remove(options.optype)
+        if options.no_isdeleted_on_target:
+            if options.isdeleted in columns:
+                columns.remove(options.isdeleted)
         for ignore in options.ignore_columns:
             if ignore in columns:
                 columns.remove(ignore)
