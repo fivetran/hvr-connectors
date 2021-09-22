@@ -249,6 +249,7 @@
 #     09/09/2021 RLR v1.27 Added support for wildcards in partitioning spec
 #     09/10/2021 RLR v1.28 Use target column ordering for select clause of INSERT SQL
 #     09/15/2021 RLR v1.29 Re-introduced logic that removes non-burst columns if refresh
+#     09/22/2021 RLR v1.30 Fixed a couple of bugs building table map
 #
 ################################################################################
 import sys
@@ -264,7 +265,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.29"
+VERSION = "1.30"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1769,6 +1770,9 @@ def unused_keys_in_multidelete(tablename):
     return 'pageno'
 
 def file_for_table(tablename, filename, fileext):
+    trace(2, "file_for_table {} {} {}".format(tablename, filename, fileext))
+    if len(fileext) >= len(filename):
+        return False
     if filename[-len(fileext):] != fileext:
         raise Exception("Expected extension {} not found in {}".format(options.file_format, filename))
     if options.file_pattern:
@@ -1813,14 +1817,17 @@ def table_file_name_map():
     for item in zip(hvr_base_names, hvr_tbl_names, hvr_col_names, hvr_tbl_keys):
         tbl_map[item] = []
         num_rows[item] = 0
-        if files :
+        if files:
             pop_list = []
             for idx, f in enumerate(files):
                 if file_for_table(item[1], f, suffix):
                     file_path = prefix_directory(f)
                     tbl_map[item].append(file_path)
                     pop_list.append(idx)
-                    num_rows[item] += int(rows[idx])
+                    try:
+                        num_rows[item] += int(rows[idx])
+                    except:
+                        pass
             # Pop files from list from high index to low to maintain index sanity
             for idx in reversed(pop_list):
                 files.pop(idx)
@@ -1830,7 +1837,7 @@ def table_file_name_map():
     if options.parallel_count:
         file_counter = total_files
 
-    if files :  
+    if files:  
         raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
 
     return tbl_map, num_rows
