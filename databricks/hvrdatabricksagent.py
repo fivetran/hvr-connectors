@@ -117,6 +117,10 @@
 #        If set, the number of seconds that the script will wait before loading
 #        the burst table after creating it.
 #
+#     HVR_DBRK_MERGE_DELAY       (optional)
+#        If set, the number of seconds that the script will wait before merging from
+#        the burst table to the target table.
+#
 #     HVR_DBRK_UNMANAGED_BURST   (optional)
 #        If not set, the script will determine whether it can use an unmanaged table for 
 #        the burst table.  If set to 'ON', use an unmanaged table for the burst table
@@ -252,6 +256,7 @@
 #     09/22/2021 RLR v1.30 Fixed a couple of bugs building table map
 #     09/30/2021 RLR v1.31 Fixed another bug in building table map
 #                          Fixed order of columns in target table when created
+#     09/30/2021 RLR v1.32 Added way to set a delay between loading the burst and merge
 #
 ################################################################################
 import sys
@@ -267,7 +272,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.31"
+VERSION = "1.32"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -324,6 +329,7 @@ class Options:
     delimiter = ','
     line_separator = ''
     load_burst_delay = None
+    merge_delay = None
     unmanaged_burst = 'Auto'
     burst_table_set_of_files = False
     external_loc = ''
@@ -449,6 +455,12 @@ def env_load():
             options.load_burst_delay = float(burst_delay)
         except Exception as err:
             print("Invalid value '{}' defined for HVR_DBRK_LOAD_BURST_DELAY; must be numeric".format(burst_delay))
+    merge_delay = os.getenv('HVR_DBRK_MERGE_DELAY', '')
+    if merge_delay:
+        try:
+            options.merge_delay = float(merge_delay)
+        except Exception as err:
+            print("Invalid value '{}' defined for HVR_DBRK_MERGE_DELAY; must be numeric".format(merge_delay))
     unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
     if unmanaged_burst:
         if unmanaged_burst.upper() == 'ON':
@@ -617,6 +629,8 @@ def trace_input():
     trace(3, "Create burst as unmanaged table = '{}'".format(options.unmanaged_burst))
     if options.load_burst_delay:
         trace(3, "Delay {} seconds after creating the burst table, before loading it".format(options.load_burst_delay))
+    if options.merge_delay:
+        trace(3, "Delay {} seconds before merging from the burst table after loading it".format(options.merge_delay))
     if options.insert_after_merge_dels_and_upds:
         trace(3, "For CDC MERGE only UPDATES & DELETES; use INSERT sql for INSERTS")
 
@@ -2228,6 +2242,7 @@ def create_burst_table(burst_table_name, columns, col_types, burst_columns):
     trace(1, "Creating table " + burst_table_name)
     execute_sql(create_sql, 'Create')
     if options.load_burst_delay:
+        trace(3, "Sleep {} seconds before COPY INTO".format(options.load_burst_delay))
         time.sleep(options.load_burst_delay)
 
 def describe_table(table_name, columns, burst_columns):
@@ -2343,6 +2358,10 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     execute_sql(sql, dml)
 
 def merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
+    if options.merge_delay:
+        trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
+        time.sleep(options.merge_delay)
+
     skip_clause = 'AND m.{} != 0 '.format(options.optype)
     if options.insert_after_merge_dels_and_upds:
         skip_clause += ' AND m.{} != 1'.format(options.optype)

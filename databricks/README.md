@@ -292,4 +292,5 @@ not set table properties during refresh.
 | 1.29    | 09/21/21 | Re-introduced logic that removes non-burst columns if refresh |
 | 1.30    | 09/22/21 | Fixed a couple of bugs building table map |
 | 1.31    | 09/30/21 | Fixed order of columns in target table when created |
+| 1.32    | 09/30/21 | Added way to set a delay between loading the burst and merge |
 
