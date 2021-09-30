@@ -250,6 +250,8 @@
 #     09/10/2021 RLR v1.28 Use target column ordering for select clause of INSERT SQL
 #     09/15/2021 RLR v1.29 Re-introduced logic that removes non-burst columns if refresh
 #     09/22/2021 RLR v1.30 Fixed a couple of bugs building table map
+#     09/30/2021 RLR v1.31 Fixed another bug in building table map
+#                          Fixed order of columns in target table when created
 #
 ################################################################################
 import sys
@@ -265,7 +267,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.30"
+VERSION = "1.31"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1525,7 +1527,7 @@ def get_property(params, prop_name):
     return ''
 
 def get_sequence(col):
-    return col[2]
+    return int(col[2])
 
 def target_columns(table):
 #  HVR_COLUMN_COLS= ['chn_name', 'tbl_name', 'col_sequence', 'col_name', 'col_key', 'col_datatype', 'col_length', 'col_nullable']
@@ -1802,8 +1804,8 @@ def table_file_name_map():
     hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
     hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
     hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
-    files = options.agent_env.get('HVR_FILE_NAMES', None)
-    rows = options.agent_env.get('HVR_FILE_NROWS', None)
+    files = options.agent_env.get('HVR_FILE_NAMES', [])
+    rows = options.agent_env.get('HVR_FILE_NROWS', [])
 
     if files:
         files = files.split(":")
@@ -1831,7 +1833,8 @@ def table_file_name_map():
             # Pop files from list from high index to low to maintain index sanity
             for idx in reversed(pop_list):
                 files.pop(idx)
-                rows.pop(idx)
+                if rows:
+                    rows.pop(idx)
             total_files += len(tbl_map[item])
 
     if options.parallel_count:
