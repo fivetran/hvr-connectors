@@ -165,7 +165,7 @@ To create the burst table as an unmanaged table, the script must be able to poin
 files written by integrate in this cycle for this table.  The script checks this by 1) checking if the table name is 
 in the path, and 2) checking that the files in that location are only the ones that it expects to find there.   If 
 these conditions hold, the connector can create the burst table as an unmanaged table.  If not it will create the 
-burst table, alter it, and load it.
+burst table and load it.
 
 By default, the script will create the burst table as an unmanaged table if it can (that is, if the above conditions hold), otherwise the script will create the burst table as a managed table.
 
@@ -214,7 +214,7 @@ A sample configuration for SoftDelete follows:
 The connector can be configured to create/recreate the target table when refresh is run.  The requirements are:
 - Integrate runs on the hub
 - The connector is running under Python 3
-- Set the '-r' option in the AgentPlugin /UserArgument
+- The '-r' option is set in the AgentPlugin /UserArgument
 - The repository connection string is provided to the Agent Plugin via the HVR_DBRK_HVRCONNECT Environment action.
 
 To get the value for the HVR_DBRK_HVRCONNECT Environment action:
@@ -227,11 +227,13 @@ The script can create the target table as a managed, or an unmanaged table.   By
 To create an unmanaged table, specify the location of the table using the HVR_DBRK_EXTERNAL_LOC environment action.  
 Note that the pathname specified by HVR_DBRK_EXTERNAL_LOC may contain {hvr_tbl_name} and, if it does, the script will 
 perform the substitution.  For example:
+
        /Name=HVR_DBRK_EXTERNAL_LOC /Value="/mnt/delta/{hvr_tbl_name}"
 
 If there are ColumnProperties actions tied to a Context, and that Context is used with the refresh, the "-c" Context should be passed to the connector using the "-c" option.
 
 The table can be configured so that partitioning is defined upon create with HVR_DBRK_PARTITION_table.   Set "table" to the HVR table name and set the Value of the Environment action to a comma separated list of columns.  For example:
+
        /Name=HVR_DBRK_PARTITION_kc4col /Value=c2,c1
 
 ## A note on wildcards
