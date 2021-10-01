@@ -117,6 +117,10 @@
 #        If set, the number of seconds that the script will wait before loading
 #        the burst table after creating it.
 #
+#     HVR_DBRK_MERGE_DELAY       (optional)
+#        If set, the number of seconds that the script will wait before merging from
+#        the burst table to the target table.
+#
 #     HVR_DBRK_UNMANAGED_BURST   (optional)
 #        If not set, the script will determine whether it can use an unmanaged table for 
 #        the burst table.  If set to 'ON', use an unmanaged table for the burst table
@@ -249,6 +253,10 @@
 #     09/09/2021 RLR v1.27 Added support for wildcards in partitioning spec
 #     09/10/2021 RLR v1.28 Use target column ordering for select clause of INSERT SQL
 #     09/15/2021 RLR v1.29 Re-introduced logic that removes non-burst columns if refresh
+#     09/22/2021 RLR v1.30 Fixed a couple of bugs building table map
+#     09/30/2021 RLR v1.31 Fixed another bug in building table map
+#                          Fixed order of columns in target table when created
+#     09/30/2021 RLR v1.32 Added way to set a delay between loading the burst and merge
 #
 ################################################################################
 import sys
@@ -264,7 +272,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.29"
+VERSION = "1.32"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -321,6 +329,7 @@ class Options:
     delimiter = ','
     line_separator = ''
     load_burst_delay = None
+    merge_delay = None
     unmanaged_burst = 'Auto'
     burst_table_set_of_files = False
     external_loc = ''
@@ -446,6 +455,12 @@ def env_load():
             options.load_burst_delay = float(burst_delay)
         except Exception as err:
             print("Invalid value '{}' defined for HVR_DBRK_LOAD_BURST_DELAY; must be numeric".format(burst_delay))
+    merge_delay = os.getenv('HVR_DBRK_MERGE_DELAY', '')
+    if merge_delay:
+        try:
+            options.merge_delay = float(merge_delay)
+        except Exception as err:
+            print("Invalid value '{}' defined for HVR_DBRK_MERGE_DELAY; must be numeric".format(merge_delay))
     unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
     if unmanaged_burst:
         if unmanaged_burst.upper() == 'ON':
@@ -614,6 +629,8 @@ def trace_input():
     trace(3, "Create burst as unmanaged table = '{}'".format(options.unmanaged_burst))
     if options.load_burst_delay:
         trace(3, "Delay {} seconds after creating the burst table, before loading it".format(options.load_burst_delay))
+    if options.merge_delay:
+        trace(3, "Delay {} seconds before merging from the burst table after loading it".format(options.merge_delay))
     if options.insert_after_merge_dels_and_upds:
         trace(3, "For CDC MERGE only UPDATES & DELETES; use INSERT sql for INSERTS")
 
@@ -1524,7 +1541,7 @@ def get_property(params, prop_name):
     return ''
 
 def get_sequence(col):
-    return col[2]
+    return int(col[2])
 
 def target_columns(table):
 #  HVR_COLUMN_COLS= ['chn_name', 'tbl_name', 'col_sequence', 'col_name', 'col_key', 'col_datatype', 'col_length', 'col_nullable']
@@ -1769,6 +1786,9 @@ def unused_keys_in_multidelete(tablename):
     return 'pageno'
 
 def file_for_table(tablename, filename, fileext):
+    trace(2, "file_for_table {} {} {}".format(tablename, filename, fileext))
+    if len(fileext) >= len(filename):
+        return False
     if filename[-len(fileext):] != fileext:
         raise Exception("Expected extension {} not found in {}".format(options.file_format, filename))
     if options.file_pattern:
@@ -1798,8 +1818,8 @@ def table_file_name_map():
     hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
     hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
     hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
-    files = options.agent_env.get('HVR_FILE_NAMES', None)
-    rows = options.agent_env.get('HVR_FILE_NROWS', None)
+    files = options.agent_env.get('HVR_FILE_NAMES', [])
+    rows = options.agent_env.get('HVR_FILE_NROWS', [])
 
     if files:
         files = files.split(":")
@@ -1813,24 +1833,28 @@ def table_file_name_map():
     for item in zip(hvr_base_names, hvr_tbl_names, hvr_col_names, hvr_tbl_keys):
         tbl_map[item] = []
         num_rows[item] = 0
-        if files :
+        if files:
             pop_list = []
             for idx, f in enumerate(files):
                 if file_for_table(item[1], f, suffix):
                     file_path = prefix_directory(f)
                     tbl_map[item].append(file_path)
                     pop_list.append(idx)
-                    num_rows[item] += int(rows[idx])
+                    try:
+                        num_rows[item] += int(rows[idx])
+                    except:
+                        pass
             # Pop files from list from high index to low to maintain index sanity
             for idx in reversed(pop_list):
                 files.pop(idx)
-                rows.pop(idx)
+                if rows:
+                    rows.pop(idx)
             total_files += len(tbl_map[item])
 
     if options.parallel_count:
         file_counter = total_files
 
-    if files :  
+    if files:  
         raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
 
     return tbl_map, num_rows
@@ -2218,6 +2242,7 @@ def create_burst_table(burst_table_name, columns, col_types, burst_columns):
     trace(1, "Creating table " + burst_table_name)
     execute_sql(create_sql, 'Create')
     if options.load_burst_delay:
+        trace(3, "Sleep {} seconds before COPY INTO".format(options.load_burst_delay))
         time.sleep(options.load_burst_delay)
 
 def describe_table(table_name, columns, burst_columns):
@@ -2333,6 +2358,10 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     execute_sql(sql, dml)
 
 def merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
+    if options.merge_delay:
+        trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
+        time.sleep(options.merge_delay)
+
     skip_clause = 'AND m.{} != 0 '.format(options.optype)
     if options.insert_after_merge_dels_and_upds:
         skip_clause += ' AND m.{} != 1'.format(options.optype)

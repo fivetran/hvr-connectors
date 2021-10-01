@@ -42,7 +42,7 @@ The following options are available with this connector:
 - A FileFormat action with one of the following (the default is CSV)
   - /Csv /HeaderLine
   - /Avro
-  - /Json
+  - /Json /RowFragments
   - /Parquet
 
 ## Environment variables
@@ -121,6 +121,7 @@ as the values in the CSV file correspond, there are no conversion issues.
 However, it is not that uncommon to find the default field separator, the comma, in the data and this causes parsing issues.
 If, because of the characters in the data, the FileFormat action is modified to set the LineSeparator and/or FieldSeparator 
 character, there are Environment actions to communicate these settings to the connector:
+
       HVR_DBRK_DELIMITER
       HVR_DBRK_LINE_SEPARATOR
 
@@ -158,22 +159,15 @@ If set to 'none' the connector will not check that the files exist, nor will it 
 If set to '+cleanup' the connector will delete any files it finds in the folder during the 'check' phase that are not part of this integrate cycle.  Note that to enable '+cleanup', HVR_DBRK_FILE_EXPR must be set to the value of Integrate /RenameExpression and the pathname specified by HVR_DBRK_FILE_EXPR must include {hvr_tbl_name} as an element in a folder, not just the file name.
 
 ## Burst table
-The script tries to create the burst table as an unmanaged table. That is, with syntax such as:
-
-    CREATE TABLE <tablename>__bur (<column list>) USING <fileformat> LOCATION <path to files>
-
-where the location is a path to the files written by the current integrate cycle.   The alternative method of creating 
-and loading the burst table is more time consuming:
-
-    CREATE TABLE <tablename>__bur USING DELTA AS SELECT * FROM <tablename> WHERE 1=0
-    ALTER TABLE <tablename>__bur ADD COLUMN …. (to add the op_type and is_deleted columns if needed)
-    COPY INTO <tablename>__bur FROM (SELECT <columnlist> FROM <file list>)
+The script creates the burst table as a managed table and then uses COPY INTO to load the burst table.  The connector can also be configured to create the burst table as an unmanaged table.  That is, the create table defines metadata but the data are the files uploaded by Integrate. When the burst table is created as an unmanaged table, the script skips the COPY INTO sql to load the burst table.
 
 To create the burst table as an unmanaged table, the script must be able to point to a location that has only those 
 files written by integrate in this cycle for this table.  The script checks this by 1) checking if the table name is 
 in the path, and 2) checking that the files in that location are only the ones that it expects to find there.   If 
-these conditions hold, the connector will create the burst table as an unmanaged table.  If not it will create the 
-burst table, alter it, and load it.
+these conditions hold, the connector can create the burst table as an unmanaged table.  If not it will create the 
+burst table and load it.
+
+By default, the script will create the burst table as an unmanaged table if it can (that is, if the above conditions hold), otherwise the script will create the burst table as a managed table.
 
 An Environment action, HVR_DBRK_UNMANAGED_BURST, can be used to force this logic one way or the other.  However, if 
 HVR_DBRK_UNMANAGED_BURST=ON, and there are more files in the location than in the integrate cycle for the table, the 
@@ -182,6 +176,7 @@ script will revert to the managed table logic.
 ## Target is a replication copy
 To maintain a replication copy, the connector requires that the following ColumnProperties actions are defined. Note 
 that the connector will not apply these columns to the Databricks target table.
+:w
 
     ColumnProperties /Name=op_type /Extra /IntegrateExpression={hvr_op} /Datatype=integer /Context=!refresh
     ColumnProperties /Name=is_deleted /Extra /SoftDelete /Datatype=integer /Context=!refresh
@@ -219,8 +214,7 @@ A sample configuration for SoftDelete follows:
 The connector can be configured to create/recreate the target table when refresh is run.  The requirements are:
 - Integrate runs on the hub
 - The connector is running under Python 3
-- The AgentPlugin action that defines the Databricks connector has “-r” in the UserArguments. For example:  
-       AgentPlugin /Command=hvrdatabricksagent.py /UserArgument=”-r” /Context=”refresh”
+- The '-r' option is set in the AgentPlugin /UserArgument
 - The repository connection string is provided to the Agent Plugin via the HVR_DBRK_HVRCONNECT Environment action.
 
 To get the value for the HVR_DBRK_HVRCONNECT Environment action:
@@ -233,11 +227,13 @@ The script can create the target table as a managed, or an unmanaged table.   By
 To create an unmanaged table, specify the location of the table using the HVR_DBRK_EXTERNAL_LOC environment action.  
 Note that the pathname specified by HVR_DBRK_EXTERNAL_LOC may contain {hvr_tbl_name} and, if it does, the script will 
 perform the substitution.  For example:
+
        /Name=HVR_DBRK_EXTERNAL_LOC /Value="/mnt/delta/{hvr_tbl_name}"
 
 If there are ColumnProperties actions tied to a Context, and that Context is used with the refresh, the "-c" Context should be passed to the connector using the "-c" option.
 
 The table can be configured so that partitioning is defined upon create with HVR_DBRK_PARTITION_table.   Set "table" to the HVR table name and set the Value of the Environment action to a comma separated list of columns.  For example:
+
        /Name=HVR_DBRK_PARTITION_kc4col /Value=c2,c1
 
 ## A note on wildcards
@@ -290,3 +286,7 @@ not set table properties during refresh.
 | 1.27    | 09/09/21 | Added support for wildcards in partitioning spec |
 | 1.28    | 09/10/21 | Use target column ordering for select clause of INSERT SQL |
 | 1.29    | 09/21/21 | Re-introduced logic that removes non-burst columns if refresh |
+| 1.30    | 09/22/21 | Fixed a couple of bugs building table map |
+| 1.31    | 09/30/21 | Fixed order of columns in target table when created |
+| 1.32    | 09/30/21 | Added way to set a delay between loading the burst and merge |
+
