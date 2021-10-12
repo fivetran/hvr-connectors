@@ -257,6 +257,7 @@
 #     09/30/2021 RLR v1.31 Fixed another bug in building table map
 #                          Fixed order of columns in target table when created
 #     09/30/2021 RLR v1.32 Added way to set a delay between loading the burst and merge
+#     10/12/2021 RLR v1.33 Fixed table mathcing with wildcards
 #
 ################################################################################
 import sys
@@ -266,13 +267,14 @@ import os
 import re
 import time
 import uuid
+import fnmatch
 import subprocess
 import json
 import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.32"
+VERSION = "1.33"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1388,20 +1390,8 @@ def breakup_length(lenval):
     return lenval[:comma],lenval[comma+1:]
 
 def table_matches(configured, value):
-    matches = False
-    if configured == '*':
-        matches =  True
-    elif configured[0] == '*' and value.endswith(configured[1:]):
-        matches =  True
-    elif configured.endswith("*") and value.startswith(configured[:-1]):
-        matches =  True
-    else:
-        try:
-            matches = re.match(re.escape(configured), value) is not None
-        except Exception as ex:
-            print("Skipping ColumnProperties action configured for {}, regex match failed with {}".format(configured, ex))
-    trace(2, "ColumnProperties configured for table '{}' matching '{}': {}".format(configured, value, matches))
-    return matches
+    trace(2, "ColumnProperties configured for table '{}' matching '{}': {}".format(configured, value, fnmatch.fnmatch(value, configured)))
+    return configured == '*' or fnmatch.fnmatch(value, configured)
 
 def remove_identity(ctype):
     if len(ctype) > len(' identity'):
