@@ -291,3 +291,4 @@ not set table properties during refresh.
 | 1.32    | 09/30/21 | Added way to set a delay between loading the burst and merge |
 | 1.33    | 10/12/21 | Fixed table mathcing with wildcards |
 | 1.34    | 10/18/21 | Added ability to define the restrict condition for a refresh |
+| 1.35    | 10/18/21 | Changed connector to REPLACE the target table if refresh without CREATE instead of TRUNCATE |

@@ -264,6 +264,8 @@
 #     10/12/2021 RLR v1.33 Fixed table mathcing with wildcards
 #     10/18/2021 RLR v1.34 Added ability to define the restrict condition for a refresh
 #                          Fixed a core, improved error reporting, in HVR connect string processing.
+#     10/18/2021 RLR v1.35 Changed connector to REPLACE the target table if refresh without CREATE
+#                          instead of TRUNCATE. This is on advice from Databricks
 #
 ################################################################################
 import sys
@@ -280,7 +282,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.34"
+VERSION = "1.35"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2241,6 +2243,28 @@ def drop_table(table_name):
     trace(1, "Dropping table " + table_name)
     execute_sql(drop_sql, 'Drop')
 
+def replace_target_table(target_table, columns, col_types, partition_cols):
+    create_sql = "CREATE OR REPLACE TABLE {0} ".format(target_table)
+    create_sql += "("
+    for col in columns:
+        if not col in col_types:
+            raise Exception("Column {} is in HVR, but not in target table".format(col))
+        create_sql += "`{0}` {1},".format(col, col_types[col])
+    create_sql = create_sql[:-1]
+    create_sql += ") using DELTA"
+    if options.external_loc:
+        create_sql += " LOCATION '{}'".format(get_external_loc(target_table))
+    if partition_cols:
+        create_sql += " PARTITIONED BY ("
+        for col in partition_cols:
+            create_sql += col + ","
+        create_sql = create_sql[:-1]
+        create_sql += ")"
+    if options.set_tblproperties:
+        create_sql += " TBLPROPERTIES ({})".format(options.set_tblproperties)
+    trace(1, "Replacing table {} for truncate".format(target_table))
+    execute_sql(create_sql, 'Replace')
+
 def create_burst_table(burst_table_name, columns, col_types, burst_columns):
     create_sql = "CREATE OR REPLACE TABLE {0} ".format(burst_table_name)
     create_sql += "("
@@ -2563,6 +2587,10 @@ def process_table(tab_entry, file_list, numrows):
             if ignore in columns:
                 columns.remove(ignore)
 
+    col_types = []
+    partition_cols = []
+    target_cols = []
+
     if not use_burst_logic:
         if options.mode == "refr_write_end":
             if refresh_options.job_name and refresh_options.slices_done > 1:
@@ -2577,11 +2605,13 @@ def process_table(tab_entry, file_list, numrows):
                     if options.refresh_restrict:
                         delete_rows_from_target(target_table, options.refresh_restrict)
                     else:
-                        truncate_table(target_table)
+                        columns, col_types, partition_cols, target_cols = describe_table(target_table, columns, burst_columns)
+                        replace_target_table(target_table, columns, col_types, partition_cols)
                 if options.set_tblproperties:
                     set_table_properties(target_table)
 
-    columns, col_types, partition_cols, target_cols = describe_table(target_table, columns, burst_columns)
+    if not col_types:
+        columns, col_types, partition_cols, target_cols = describe_table(target_table, columns, burst_columns)
 
     if use_burst_logic:
         drop_table(load_table)
