@@ -136,6 +136,10 @@
 #     HVR_DBRK_PARTITION_<tablename> (optional)
 #        Define the partition columns for <tablename>.  Note that this only affects refresh.
 #
+#     HVR_DBRK_REFRESH_RESTRICT  (optional)
+#        If set during refresh the connector will delete from <target> where <refresh restrict>
+#        instead of truncating the target table.  This option is not compatible with "-r"
+#
 #     HVR_DBRK_PARALLEL          (optional)
 #        If set, the tables will be processed in parallel.
 #
@@ -258,7 +262,8 @@
 #                          Fixed order of columns in target table when created
 #     09/30/2021 RLR v1.32 Added way to set a delay between loading the burst and merge
 #     10/12/2021 RLR v1.33 Fixed table mathcing with wildcards
-#     10/15/2021 RLR v1.34 Fixed a core, improved error reporting, in HVR connect string processing.
+#     10/18/2021 RLR v1.34 Added ability to define the restrict condition for a refresh
+#                          Fixed a core, improved error reporting, in HVR connect string processing.
 #
 ################################################################################
 import sys
@@ -350,6 +355,7 @@ class Options:
     filestore_ops = DEFAULT_FILEOPS
     other_files_in_loc = []
     recreate_tables_on_refresh = False
+    refresh_restrict = ''
     insert_after_merge_dels_and_upds = False
     partition_columns = {}
     parallel_count = 0
@@ -450,6 +456,9 @@ def env_load():
     if len(options.delimiter) != 1:
         raise Exception("Invalid value {0} for {1}; must be one character".format(options.delimiter, 'HVR_DBRK_DELIMITER'))
     options.line_separator = os.getenv('HVR_DBRK_LINE_SEPARATOR', '')
+    options.refresh_restrict = os.getenv('HVR_DBRK_REFRESH_RESTRICT', '')
+    if options.recreate_tables_on_refresh and options.refresh_restrict:
+        raise Exception("HVR_DBRK_REFRESH_RESTRICT is invalid when '-r' (create table during refresh) is set")
     if len(options.line_separator) > 1:
         raise Exception("Invalid value {0} for {1}; must be one character".format(options.line_separator, 'HVR_DBRK_LINE_SEPARATOR'))
     burst_delay = os.getenv('HVR_DBRK_LOAD_BURST_DELAY', '')
@@ -624,6 +633,8 @@ def trace_input():
         trace(3, "Define partitioning during create:")
         for tab,cols in options.partition_columns.items():
             trace(3, "   {}:  {}".format(tab, cols))
+    if not options.recreate_tables_on_refresh and options.refresh_restrict:
+        trace(3, "During refresh, instead of truncating the target table, delete rows matching {}".format(options.refresh_restrict))
     trace(3, "Set TBLPROPERTIES during refresh = '{}'".format(options.set_tblproperties))
     if options.parallel_count:
         trace(3, "Apply changes in parallel, {} tables at a time".format(options.parallel_count))
@@ -2220,6 +2231,11 @@ def truncate_table(table_name):
     trace(1, "Truncating table " + table_name)
     execute_sql(trunc_sql, 'Truncate')
 
+def delete_rows_from_target(table_name, where_clause):
+    trunc_sql = "DELETE FROM {0} WHERE {1}".format(table_name, where_clause)
+    trace(1, "Deleteing from {0} WHERE {1}".format(table_name, where_clause))
+    execute_sql(trunc_sql, 'Delete')
+
 def drop_table(table_name):
     drop_sql = "DROP TABLE IF EXISTS {0}".format(table_name)
     trace(1, "Dropping table " + table_name)
@@ -2552,14 +2568,16 @@ def process_table(tab_entry, file_list, numrows):
             if refresh_options.job_name and refresh_options.slices_done > 1:
                 trace(1, "First slice has already refreshed, disabling create/truncate target table")
                 options.recreate_tables_on_refresh = False
-                options.truncate_target_on_refresh = False
                 options.set_tblproperties = ''
             if options.recreate_tables_on_refresh:
                 # pass the HVR table name - the repository will provide the base_name
                 recreate_target_table(tab_entry[1])
             else:
                 if options.truncate_target_on_refresh:
-                    truncate_table(target_table)
+                    if options.refresh_restrict:
+                        delete_rows_from_target(target_table, options.refresh_restrict)
+                    else:
+                        truncate_table(target_table)
                 if options.set_tblproperties:
                     set_table_properties(target_table)
 
