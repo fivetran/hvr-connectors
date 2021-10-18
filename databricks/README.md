@@ -236,9 +236,6 @@ The table can be configured so that partitioning is defined upon create with HVR
 
        /Name=HVR_DBRK_PARTITION_kc4col /Value=c2,c1
 
-## A note on wildcards
-The connector will associate a ColumnProperties action with a table if ColumnProperties /Table is defined with 1) the actual table name, 2) a wildcard matching all tablenames ('\*'), 3) a specification matching the beginning of the name ('asdf\\*'), or 4) a specification matching the end of a name ('\*asdf').   The connector cannot match any other wildcarded name specification.   This is also true for the "table" used in HVR_DBRK_PARTITION_table.  The Environment Variable can be used to define partitioning where "table" is the actual table name, "table" = '\*', "table" = 'asdf\*', or "table" = '\*asdf'.
-
 ## Sliced Refresh
 If the environment variable HVR_DBRK_SLICE_REFRESH_ID is set on a refresh, the connector will use locking and control functionality to ensure that the target table is truncated or created only at the beginning, and that only one slice job at a time accesses the target table.  This logic is in conjunction with the hvrslicedrefresh.py script.
 
@@ -289,4 +286,4 @@ not set table properties during refresh.
 | 1.30    | 09/22/21 | Fixed a couple of bugs building table map |
 | 1.31    | 09/30/21 | Fixed order of columns in target table when created |
 | 1.32    | 09/30/21 | Added way to set a delay between loading the burst and merge |
-
+| 1.33    | 10/12/21 | Fixed table mathcing with wildcards |

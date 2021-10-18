@@ -257,6 +257,8 @@
 #     09/30/2021 RLR v1.31 Fixed another bug in building table map
 #                          Fixed order of columns in target table when created
 #     09/30/2021 RLR v1.32 Added way to set a delay between loading the burst and merge
+#     10/12/2021 RLR v1.33 Fixed table mathcing with wildcards
+#     10/15/2021 RLR v1.34 Fixed a core, improved error reporting, in HVR connect string processing.
 #
 ################################################################################
 import sys
@@ -266,13 +268,14 @@ import os
 import re
 import time
 import uuid
+import fnmatch
 import subprocess
 import json
 import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.32"
+VERSION = "1.34"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1218,15 +1221,19 @@ def get_channel_export():
     for opt in options.hvr_opts:
         cmd.append(opt)
     cmd.append(tempexpfile)
-    trace(2, "{}".format(cmd))
+    cmdstr = ''
+    for c in cmd:
+        cmdstr += c + ' '
+    trace(2, "Run Command: {}".format(cmdstr))
     try:
         rval = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
         if options.trace >= 2 and len(rval):
             print("return from run command: {}".format(rval))
-    except subprocess.CalledProcessError as e:
-        if options.trace >= 2:
-            print("{}".format(str(e)))
-        raise Exception("Error getting channel export")
+    except Exception as e:
+        print("Command failed: {}".format(cmdstr))
+        print("This may be due to 'Refresh token invalid or expired'")
+        print("Please run command as hvr user in the same location as the agent runs to see more information")
+        raise Exception("Error getting channel export: {}".format(e))
     return tempexpfile
 
 class Options:
@@ -1388,20 +1395,8 @@ def breakup_length(lenval):
     return lenval[:comma],lenval[comma+1:]
 
 def table_matches(configured, value):
-    matches = False
-    if configured == '*':
-        matches =  True
-    elif configured[0] == '*' and value.endswith(configured[1:]):
-        matches =  True
-    elif configured.endswith("*") and value.startswith(configured[:-1]):
-        matches =  True
-    else:
-        try:
-            matches = re.match(re.escape(configured), value) is not None
-        except Exception as ex:
-            print("Skipping ColumnProperties action configured for {}, regex match failed with {}".format(configured, ex))
-    trace(2, "ColumnProperties configured for table '{}' matching '{}': {}".format(configured, value, matches))
-    return matches
+    trace(2, "ColumnProperties configured for table '{}' matching '{}': {}".format(configured, value, fnmatch.fnmatch(value, configured)))
+    return configured == '*' or fnmatch.fnmatch(value, configured)
 
 def remove_identity(ctype):
     if len(ctype) > len(' identity'):
@@ -1658,7 +1653,7 @@ def show_columns(columns):
 
 def get_target_basename(table):
     for prop in g_table_props:
-        if prop[C_TBL] == table:
+        if table_matches(prop[C_TBL], table):
             if options.context:
                 context = get_property(prop[C_PRM], 'Context')
                 if context and context != options.context:
@@ -1728,7 +1723,7 @@ def initialize_hvr_connect():
         trace(4, "  {}".format(arg))
     a = 0
     while True:
-         if not args[a].startswith('-'):
+         if a >= len(args) or not args[a].startswith('-'):
              break
          opt = args[a][1]
          if not options.hvr_6 and opt != 'h' and opt != 'u':
@@ -1741,7 +1736,10 @@ def initialize_hvr_connect():
          else:
              options.hvr_opts.append(args[a])
          a = a + 1
-    options.hvr_opts.append(args[a])
+    if a < len(args):
+        options.hvr_opts.append(args[a])
+    if options.hvr_6 and len(options.hvr_opts) != 2:
+        raise Exception("Expecting HVR connection in the form '-R<url> <hubname>'; found {}".format(options.hvr_opts))
     if not options.hvr_6:
         trace(4, "HVR connect using = {}".format(options.hvr_opts))
         hubname = get_hub_name()
