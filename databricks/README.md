@@ -69,6 +69,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_MULTIDELETE       |     No    | Handle the multi-delete change that is a result of SAPXform |
 | HVR_DBRK_PARALLEL          |     No    | Number of parallel processes processing table changes |
 | HVR_DBRK_PARTITION_table   |     No    | If set, target table is created with partitions columns |
+| HVR_DBRK_REFRESH_RESTRICT  |     No    | If set, and refresh, delete rows matching this condition instead of truncating |
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
 | HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
@@ -135,6 +136,8 @@ one column’s datatype set to 1000), Databricks will throw an error.   To preve
 be added to define a precision lower than or equal to 38.
 
 If the FileFormat is JSON, the JsonMode should be set to RowFragments.
+
+If using HVR 6, and the FileFormat is PARQUET, set BlockCompress=GZIP on the FileFormat action
 
 ## Files written by HVR and processed by the connector
 The connector associates the files produced by integrate or refresh with the different tables by parsing the file
@@ -287,3 +290,4 @@ not set table properties during refresh.
 | 1.31    | 09/30/21 | Fixed order of columns in target table when created |
 | 1.32    | 09/30/21 | Added way to set a delay between loading the burst and merge |
 | 1.33    | 10/12/21 | Fixed table mathcing with wildcards |
+| 1.34    | 10/18/21 | Added ability to define the restrict condition for a refresh |
