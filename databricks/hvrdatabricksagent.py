@@ -20,6 +20,7 @@
 #                    if specified with "-D", the target table has this column
 #     -E <envvar>  - pass an environment variable
 #     -i <collist> - if '-r', these (Extra) columns are not in target
+#     -l           - downshift {hvr_tbl_name} in HVR_DBRK_EXTERNAL_LOC
 #     -n - use INSERT for DML inserts insetad of MERGE.   This could improve 
 #          perofromance but potentially cause OOS after a refresh.  The MERGE 
 #          statement is Resilient.   Tables in Databricks do not have a UK.
@@ -266,6 +267,7 @@
 #                          Fixed a core, improved error reporting, in HVR connect string processing.
 #     10/18/2021 RLR v1.35 Changed connector to REPLACE the target table if refresh without CREATE
 #                          instead of TRUNCATE. This is on advice from Databricks
+#     10/20/2021 RLR v1.36 Add an option to downshift basename when used in HVR_DBRK_EXTERNAL_LOC
 #
 ################################################################################
 import sys
@@ -282,7 +284,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.35"
+VERSION = "1.36"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -343,6 +345,7 @@ class Options:
     unmanaged_burst = 'Auto'
     burst_table_set_of_files = False
     external_loc = ''
+    downshift_name = False
     use_wasb = False
     auto_optimize = True
     multidelete_map = {}
@@ -702,7 +705,7 @@ def process_args(argv):
     if len(cmdargs):
         try:
             list_args = cmdargs.split(" ");
-            opts, args = getopt.getopt(list_args,"c:d:D:E:i:no:O:prtwy")
+            opts, args = getopt.getopt(list_args,"c:d:D:E:i:lno:O:prtwy")
         except getopt.GetoptError:
             raise Exception("Error parsing command line arguments '" + cmdargs + "' due to invalid argument or invalid syntax")
     
@@ -724,6 +727,8 @@ def process_args(argv):
                     print("Failed {} putting {} in the environment".format(err, arg))
             elif opt == '-i':
                 options.ignore_columns = arg.split(',')
+            elif opt == '-l':
+                options.downshift_name = True
             elif opt == '-n':
                 options.insert_after_merge_dels_and_upds = True
             elif opt == '-o':
@@ -1495,6 +1500,8 @@ def databricks_datatype(col):
 
 def get_external_loc(table):
     if options.external_loc.find('{hvr_tbl_name}') > 0:
+        if options.downshift_name:
+            return options.external_loc.replace('{hvr_tbl_name}', table.lower())
         return options.external_loc.replace('{hvr_tbl_name}', table)
     return options.external_loc
 
