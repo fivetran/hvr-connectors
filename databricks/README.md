@@ -67,7 +67,6 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
 | HVR_DBRK_LOAD_BURST_DELAY  |     No    | Delay, in seconds, after creating the burst table and before loading |
 | HVR_DBRK_MULTIDELETE       |     No    | Handle the multi-delete change that is a result of SAPXform |
-| HVR_DBRK_PARALLEL          |     No    | Number of parallel processes processing table changes |
 | HVR_DBRK_PARTITION_table   |     No    | If set, target table is created with partitions columns |
 | HVR_DBRK_REFRESH_RESTRICT  |     No    | If set, and refresh, delete rows matching this condition instead of truncating |
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
@@ -292,3 +291,5 @@ not set table properties during refresh.
 | 1.33    | 10/12/21 | Fixed table mathcing with wildcards |
 | 1.34    | 10/18/21 | Added ability to define the restrict condition for a refresh |
 | 1.35    | 10/18/21 | Changed connector to REPLACE the target table if refresh without CREATE instead of TRUNCATE |
+| 1.36    | 10/20/21 | Add an option to downshift basename when used in HVR_DBRK_EXTERNAL_LOC |
+| 1.37    | 11/12/21 | Remove HVR_DBRK_PARALLEL |
