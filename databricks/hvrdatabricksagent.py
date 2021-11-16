@@ -266,6 +266,7 @@
 #                          instead of TRUNCATE. This is on advice from Databricks
 #     10/20/2021 RLR v1.36 Add an option to downshift basename when used in HVR_DBRK_EXTERNAL_LOC
 #     11/12/2021 RLR v1.37 Remove HVR_DBRK_PARALLEL
+#     11/16/2021 RLR v1.38 Drop target table if necessary before creating it
 #
 ################################################################################
 import sys
@@ -282,7 +283,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.37"
+VERSION = "1.38"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2280,13 +2281,16 @@ def describe_table(table_name, columns, burst_columns):
     for col in columns:
         if not col in burst_columns and not col in options.ignore_columns:
             col_list.append(col.lower())
-    sql_stmt = "DESCRIBE TABLE {0}".format(table_name)
+    sql_stmt = "DESCRIBE TABLE EXTENDED {0}".format(table_name)
     trace(1, "Describe table " + table_name)
     trace(2, "Execute: {0}".format(sql_stmt))
     col_types = {}
     part_cols = []
     targ_cols = []
+    table_type = []
+    external_loc = ''
     add_partitions = False
+    table_details = False
     try:
         Connections.cursor.execute(sql_stmt)
         while True:
@@ -2297,24 +2301,42 @@ def describe_table(table_name, columns, burst_columns):
             if col[0] == "# Partitioning":
                 add_partitions = True
                 continue
+            if col[0] == "# Detailed Table Information":
+                add_partitions = False
+                table_details = True
+                continue
             if add_partitions:
                 if col[0] == "Not partitioned":
-                    break
-                if col[1]:
+                    add_partitions = False
+                elif col[1]:
                     part_cols.append(col[1])
+                continue
+            if table_details and col[0] == "Location":
+                external_loc = col[1]
+                continue
+            if table_details and col[0] == "Type":
+                table_type = [col[1]]
                 continue
             colname = col[0].lower()
             if len(col) > 1 and colname in col_list:
                 targ_cols.append(colname)
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
-        print("Desc SQL failed: {1}".format(sql_stmt))
+        if "Table or view not found for 'DESCRIBE TABLE'" in ex.args[1]:
+            return col_list, col_types, part_cols, targ_cols, table_type
+        print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
+    except Exception as ex:
+        print("Desc SQL failed: {}".format(sql_stmt))
+        raise ex
+    if table_type:
+        table_type.append(external_loc)
     trace(2, "Columns: {}".format(col_list))
     trace(2, "Column types: {}".format(col_types))
     trace(2, "Partition columns: {}".format(part_cols))
     trace(2, "Target columns: {}".format(targ_cols))
-    return col_list, col_types, part_cols, targ_cols
+    trace(2, "Table type: {}".format(table_type))
+    return col_list, col_types, part_cols, targ_cols, table_type
 
 def get_partition_values(table_name, column):
     sql_stmt = "SELECT DISTINCT({}) FROM {}".format(column, table_name)
@@ -2348,13 +2370,32 @@ def get_create_table_ddl(hvr_table, target_name, columns):
     show_columns(columns)
     return target_create_table(hvr_table, target_name, columns)
 
-def recreate_target_table(hvr_table):
+def drop_target_table(target_table, table_type):
+    trace(1, "Check if need to drop target table")
+    trace(2, "Target name: {}; existing type: {}; configured: {}".format(target_table, table_type, options.external_loc))
+    do_drop = False
+    if table_type:
+        if options.external_loc:
+            if table_type[0] != "EXTERNAL":
+                do_drop = True
+            else:
+                external_loc = get_external_loc(target_table)
+                if table_type[1][5:] != external_loc:
+                    do_drop = True
+        else:
+            if table_type == "EXTERNAL":
+                do_drop = True
+    if do_drop:
+        drop_table(target_table)
+
+def recreate_target_table(hvr_table, table_type):
     #  get the create table DDL - only drop when successful
     if options.hvr_6:
         target_name, columns = hvr6_get_table_info(hvr_table)
     else:
         target_name = get_target_tablename(hvr_table)
         columns = target_columns(hvr_table)
+    drop_target_table(target_name, table_type)
     create_sql = get_create_table_ddl(hvr_table, target_name, columns)
     trace(1, "Creating table " + target_name)
     execute_sql(create_sql, 'Create')
@@ -2579,10 +2620,7 @@ def process_table(tab_entry, file_list, numrows):
             if ignore in columns:
                 columns.remove(ignore)
 
-    col_types = []
-    partition_cols = []
-    target_cols = []
-
+    columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
     if not use_burst_logic:
         if options.mode == "refr_write_end":
             if refresh_options.job_name and refresh_options.slices_done > 1:
@@ -2591,19 +2629,18 @@ def process_table(tab_entry, file_list, numrows):
                 options.set_tblproperties = ''
             if options.recreate_tables_on_refresh:
                 # pass the HVR table name - the repository will provide the base_name
-                recreate_target_table(tab_entry[1])
+                recreate_target_table(tab_entry[1], table_type)
             else:
                 if options.truncate_target_on_refresh:
                     if options.refresh_restrict:
                         delete_rows_from_target(target_table, options.refresh_restrict)
                     else:
-                        columns, col_types, partition_cols, target_cols = describe_table(target_table, columns, burst_columns)
                         replace_target_table(target_table, columns, col_types, partition_cols)
                 if options.set_tblproperties:
                     set_table_properties(target_table)
 
     if not col_types:
-        columns, col_types, partition_cols, target_cols = describe_table(target_table, columns, burst_columns)
+        columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
 
     if use_burst_logic:
         drop_table(load_table)

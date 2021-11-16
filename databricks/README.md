@@ -293,3 +293,4 @@ not set table properties during refresh.
 | 1.35    | 10/18/21 | Changed connector to REPLACE the target table if refresh without CREATE instead of TRUNCATE |
 | 1.36    | 10/20/21 | Add an option to downshift basename when used in HVR_DBRK_EXTERNAL_LOC |
 | 1.37    | 11/12/21 | Remove HVR_DBRK_PARALLEL |
+| 1.38    | 11/16/21 | Drop target table if necessary before creating it |
