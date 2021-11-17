@@ -141,6 +141,9 @@
 #        If set during refresh the connector will delete from <target> where <refresh restrict>
 #        instead of truncating the target table.  This option is not compatible with "-r"
 #
+#     HVR_DBRK_PARALLEL          (optional)
+#        If set, and if running on a POSIX OS, the tables will be processed in parallel.
+#
 #     HVR_DBRK_TBLPROPERTIES     (optional)
 #        By default the connector sets the following table properties during refresh:
 #            autoOptimize.optimizeWrite = true, autoOptimize.autoCompact = true
@@ -267,6 +270,7 @@
 #     10/20/2021 RLR v1.36 Add an option to downshift basename when used in HVR_DBRK_EXTERNAL_LOC
 #     11/12/2021 RLR v1.37 Remove HVR_DBRK_PARALLEL
 #     11/16/2021 RLR v1.38 Drop target table if necessary before creating it
+#     11/17/2021 RLR v1.39 Restore support for HVR_DBRK_PARALLEL - Linux only
 #
 ################################################################################
 import sys
@@ -283,7 +287,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.38"
+VERSION = "1.39"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -362,6 +366,7 @@ class Options:
     refresh_restrict = ''
     insert_after_merge_dels_and_upds = False
     partition_columns = {}
+    parallel_count = 0
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -523,6 +528,19 @@ def env_load():
             collist = value.split(',')
             options.partition_columns[tabname] = collist
 
+    parallel = os.getenv('HVR_DBRK_PARALLEL', '')
+    if parallel:
+        try:
+            options.parallel_count = int(parallel)
+        except Exception as err:
+            raise Exception("Invalid value '{}' defined for HVR_DBRK_PARALLEL".format(parallel))
+        try:
+            if os.name != 'posix':
+                raise Exception("Parallel processing only valid on posix systems: {}".format(os.name))
+        except:
+            trace(2, "Error checking os.name to validate OS for HVR_DBRK_PARALLEL")
+            pass
+
     refresh_options.job_name = os.getenv('HVR_DBRK_SLICE_REFRESH_ID', '')
     if refresh_options.job_name:
         num_slices = os.getenv('HVR_VAR_SLICE_TOTAL', '')
@@ -632,6 +650,8 @@ def trace_input():
     if not options.recreate_tables_on_refresh and options.refresh_restrict:
         trace(3, "During refresh, instead of truncating the target table, delete rows matching {}".format(options.refresh_restrict))
     trace(3, "Set TBLPROPERTIES during refresh = '{}'".format(options.set_tblproperties))
+    if options.parallel_count:
+        trace(3, "Apply changes in parallel, {} tables at a time".format(options.parallel_count))
     if refresh_options.job_name:
         trace(3, "Sliced refresh: total slices={}; slice num={}; slice file={}".format(refresh_options.num_slices, refresh_options.slice_num, refresh_options.done_file))
     trace(3, "Create burst as unmanaged table = '{}'".format(options.unmanaged_burst))
@@ -1858,6 +1878,9 @@ def table_file_name_map():
                     rows.pop(idx)
             total_files += len(tbl_map[item])
 
+    if options.parallel_count:
+        file_counter = total_files
+
     if files:  
         raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
 
@@ -2701,10 +2724,27 @@ def process_tables_serially(table_map, num_rows):
     for t in table_map:
         process_table(t, table_map[t], num_rows[t])
 
+def pool_process_unpack(args):
+    return call_process_table(*args)
+
+def call_process_table(tab_entry, table_map, num_rows):
+    process_table(tab_entry, table_map[tab_entry], num_rows[tab_entry])
+
+def process_tables_in_parallel(table_map, num_rows):
+    import contextlib
+    from multiprocessing import Pool
+
+    trace(1, "Process in parallel {}".format(options.parallel_count))
+    with contextlib.closing(Pool(options.parallel_count)) as p:
+        p.map(pool_process_unpack,[(t,table_map,num_rows) for t in table_map])
+
 def process_tables():
     table_map,num_rows = table_file_name_map()
     try:
-        process_tables_serially(table_map, num_rows)
+        if options.parallel_count:
+            process_tables_in_parallel(table_map, num_rows)
+        else:
+            process_tables_serially(table_map, num_rows)
     finally:        
         Connections.cursor.close()
         Connections.odbc.close()
