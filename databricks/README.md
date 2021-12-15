@@ -95,10 +95,13 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 ## Authentication
 The connector needs authentication to connect to the file store and delete the files processed during the cycle.  Set Environment actions to the following values to provide this authorization to the conector.
 
-#### AWS
+#### AWS using access key
     HVR_DBRK_FILESTORE_ID - Set to the AWS access key ID
     HVR_DBRK_FILESTORE_KEY - Set to the AWS secret access key
     HVR_DBRK_FILESTORE_REGION - Set tot he region where the S3 bucket is located
+
+#### AWS using an IAM role
+If HVR_DBRK_FILESTORE_ID is not set, the connector will call the boto3 API without passing in credentials.  The boto3 library will then fall back on a set of providers as outlined in [boto3 Credentials](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html).  If the boto3 library does not find credentials using any other providers, it will try to load credentials from the instance metadata service. See the "IAM roles" section for details.
 
 #### Azure Blob store
     HVR_DBRK_FILESTORE_KEY - Set to the Azure access key
