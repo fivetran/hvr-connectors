@@ -67,6 +67,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_LINE_SEPARATOR    |     No    | The LineSeparator in the FileFormat /Csv action if set |
 | HVR_DBRK_LOAD_BURST_DELAY  |     No    | Delay, in seconds, after creating the burst table and before loading |
 | HVR_DBRK_MULTIDELETE       |     No    | Handle the multi-delete change that is a result of SAPXform |
+| HVR_DBRK_PARALLEL          |     No    | If set, and if running on a POSIX system, process tables in parallel |
 | HVR_DBRK_PARTITION_table   |     No    | If set, target table is created with partitions columns |
 | HVR_DBRK_REFRESH_RESTRICT  |     No    | If set, and refresh, delete rows matching this condition instead of truncating |
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
@@ -94,10 +95,13 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 ## Authentication
 The connector needs authentication to connect to the file store and delete the files processed during the cycle.  Set Environment actions to the following values to provide this authorization to the conector.
 
-#### AWS
+#### AWS using access key
     HVR_DBRK_FILESTORE_ID - Set to the AWS access key ID
     HVR_DBRK_FILESTORE_KEY - Set to the AWS secret access key
     HVR_DBRK_FILESTORE_REGION - Set tot he region where the S3 bucket is located
+
+#### AWS using an IAM role
+If HVR_DBRK_FILESTORE_ID is not set, the connector will call the boto3 API without passing in credentials.  The boto3 library will then fall back on a set of providers as outlined in [Boto3 Credentials](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html).  If the boto3 library does not find credentials using any other providers, and if this is an EC2 instance, boto3 will try to load credentials from the instance metadata service, allowing it to use an IAM role. See the "IAM roles" section for details.
 
 #### Azure Blob store
     HVR_DBRK_FILESTORE_KEY - Set to the Azure access key
@@ -293,3 +297,5 @@ not set table properties during refresh.
 | 1.35    | 10/18/21 | Changed connector to REPLACE the target table if refresh without CREATE instead of TRUNCATE |
 | 1.36    | 10/20/21 | Add an option to downshift basename when used in HVR_DBRK_EXTERNAL_LOC |
 | 1.37    | 11/12/21 | Remove HVR_DBRK_PARALLEL |
+| 1.38    | 11/16/21 | Drop target table if necessary before creating it |
+| 1.39    | 11/17/21 | Restore support for HVR_DBRK_PARALLEL - Linux only |
