@@ -271,6 +271,7 @@
 #     11/12/2021 RLR v1.37 Remove HVR_DBRK_PARALLEL
 #     11/16/2021 RLR v1.38 Drop target table if necessary before creating it
 #     11/17/2021 RLR v1.39 Restore support for HVR_DBRK_PARALLEL - Linux only
+#     12/17/2021 RLR v1.40 Added support for refresh/create of an empty table
 #
 ################################################################################
 import sys
@@ -287,7 +288,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.39"
+VERSION = "1.40"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2244,11 +2245,6 @@ def set_database():
     trace(1, set_sql)
     execute_sql(set_sql, 'Use')
 
-def truncate_table(table_name):
-    trunc_sql = "TRUNCATE TABLE {0}".format(table_name)
-    trace(1, "Truncating table " + table_name)
-    execute_sql(trunc_sql, 'Truncate')
-
 def delete_rows_from_target(table_name, where_clause):
     trunc_sql = "DELETE FROM {0} WHERE {1}".format(table_name, where_clause)
     trace(1, "Deleteing from {0} WHERE {1}".format(table_name, where_clause))
@@ -2620,8 +2616,8 @@ def process_table(tab_entry, file_list, numrows):
 
     t = [0,0,0,0,0,0,0]
     t[0] = timer()
-    # if refreshing an empty table, or table already processed, then skip this table
-    if len(file_list) == 0 or not files_found_in_filestore(tab_entry[1], file_list):
+    # if table already processed, then skip this table
+    if file_list and not files_found_in_filestore(tab_entry[1], file_list):
         return
 
     t[1] = timer()
@@ -2659,8 +2655,9 @@ def process_table(tab_entry, file_list, numrows):
                         delete_rows_from_target(target_table, options.refresh_restrict)
                     else:
                         replace_target_table(target_table, columns, col_types, partition_cols)
-                if options.set_tblproperties:
-                    set_table_properties(target_table)
+
+    if not file_list:
+        return
 
     if not col_types:
         columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
@@ -2756,8 +2753,8 @@ def process(argv):
     env_load()
     trace_input()
 
-    if ((options.mode == "refr_write_end" or options.mode == "integ_end") and
-         os.getenv('HVR_FILE_NAMES') != ''):
+    if (options.mode == "refr_write_end" or 
+         (options.mode == "integ_end" and os.getenv('HVR_FILE_NAMES'))):
 
         start = timer()
         if refresh_options.job_name:
