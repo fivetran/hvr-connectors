@@ -410,10 +410,12 @@ def version_check():
     python3 = sys.version_info.major == 3
     
 def check_hvr6():
-    loginpath = os.path.join(options.hvr_home, "bin")
-    loginpath = os.path.join(loginpath, "hvrlogin")
-    if os.path.exists(loginpath):
-        return True
+    verfile = os.path.join(options.hvr_home, "hvr.ver")
+    if os.path.exists(verfile):
+        with open(verfile, "r") as f:
+            vers_str = f.readline()
+            if vers_str.startswith("HVR 6"):
+                return True
     return False
 
 def print_raw(_msg, tgt= None):
