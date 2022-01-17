@@ -272,6 +272,8 @@
 #     11/16/2021 RLR v1.38 Drop target table if necessary before creating it
 #     11/17/2021 RLR v1.39 Restore support for HVR_DBRK_PARALLEL - Linux only
 #     12/17/2021 RLR v1.40 Added support for refresh/create of an empty table
+#     01/06/2022 RLR v1.41 Only create the burst table if it does not exist, or
+#                          if it does not match the target table
 #
 ################################################################################
 import sys
@@ -288,7 +290,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.40"
+VERSION = "1.41"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -410,10 +412,12 @@ def version_check():
     python3 = sys.version_info.major == 3
     
 def check_hvr6():
-    loginpath = os.path.join(options.hvr_home, "bin")
-    loginpath = os.path.join(loginpath, "hvrlogin")
-    if os.path.exists(loginpath):
-        return True
+    verfile = os.path.join(options.hvr_home, "hvr.ver")
+    if os.path.exists(verfile):
+        with open(verfile, "r") as f:
+            vers_str = f.readline()
+            if vers_str.startswith("HVR 6"):
+                return True
     return False
 
 def print_raw(_msg, tgt= None):
@@ -2165,21 +2169,21 @@ def files_found_in_filestore(table, file_list):
         raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(options.folder, table))
 
     # validate and/or set unmanaged burst table logic
-    options.burst_table_set_of_files = False
+    options.use_unmanaged_burst_table = False
     if options.unmanaged_burst == 'On':
         if files_not_in_list:
             trace(1, "Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
         else:
-            options.burst_table_set_of_files = True
+            options.use_unmanaged_burst_table = True
     if options.unmanaged_burst == 'Auto':
         # if table name is in the folder name, then assume that RenameExpression separates files into separate folders by tablename
         trace(3, "Table name '{}' in folder '{}' = {}".format(table, options.folder, table in options.folder))
         if table in options.folder:
             if files_not_in_list == 0:
-                options.burst_table_set_of_files = True
+                options.use_unmanaged_burst_table = True
             else:
                 trace(1, "Files in {0} do not match files in list for table; cannot use performant burst logic".format(options.folder))
-    trace(1, "Use performant unmanaged table for burst = {}".format(options.burst_table_set_of_files))
+    trace(1, "Use performant unmanaged table for burst = {}".format(options.use_unmanaged_burst_table))
     return True
 
 def delete_files_from_filestore(file_list):
@@ -2276,6 +2280,61 @@ def replace_target_table(target_table, columns, col_types, partition_cols):
         create_sql += " TBLPROPERTIES ({})".format(options.set_tblproperties)
     trace(1, "Replacing table {} for truncate".format(target_table))
     execute_sql(create_sql, 'Replace')
+
+def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
+    all_columns = columns.copy()
+    all_types = col_types.copy()
+    for col in burst_columns:
+        all_columns.append(col)
+        all_types[col] = 'int'
+
+    sql_stmt = "DESCRIBE TABLE EXTENDED {0}".format(burst_table_name)
+    trace(1, "Describe table " + burst_table_name)
+    trace(2, "Execute: {0}".format(sql_stmt))
+    inColumns = True
+    inDetail = False
+    unmanagedBurst = None
+    try:
+        Connections.cursor.execute(sql_stmt)
+        while True:
+            col = Connections.cursor.fetchone()
+            if col == None:
+                break
+            if col[0].startswith("#"):
+                inColumns = False
+            if col[0] == "# Detailed Table Information":
+                inDetail = True
+            if inDetail and col[0] == 'Type':
+                trace(2, "burst_table_is_current: Type = {}".format(col[1]))
+                unmanagedBurst = col[1] != 'MANAGED'
+            if not col[0] or not inColumns:
+                continue
+            colname = col[0].lower()
+            if not colname in all_columns:
+                trace(2, "burst_table_is_current: {} not in {}".format(colname, all_columns))
+                return False
+            if all_types[colname] != col[1]:
+                trace(2, "burst_table_is_current: {} type {} != {}".format(colname, all_types[colname], col[1]))
+                return False
+            all_columns.remove(colname)
+    except pyodbc.Error as ex:
+        if "Table or view not found for 'DESCRIBE TABLE'" in ex.args[1]:
+            return False
+        print("Desc SQL failed: {}".format(sql_stmt))
+        raise ex
+    except Exception as ex:
+        print("Desc SQL failed: {}".format(sql_stmt))
+        raise ex
+
+    if all_columns:
+        trace(2, "burst_table_is_current: columns not in burst {}".format(all_columns))
+        return False
+
+    if unmanagedBurst != options.use_unmanaged_burst_table:
+        trace(2, "burst_table_is_current: existing unmanaged = {}, actual burst unmanaged = {}".format(unmanagedBurst, options.use_unmanaged_burst_table))
+        return False
+
+    return True
 
 def create_burst_table(burst_table_name, columns, col_types, burst_columns):
     create_sql = "CREATE OR REPLACE TABLE {0} ".format(burst_table_name)
@@ -2614,7 +2673,7 @@ def process_table(tab_entry, file_list, numrows):
     burst_columns = []
     load_table = target_table
 
-    t = [0,0,0,0,0,0,0]
+    t = [0,0,0,0,0,0]
     t[0] = timer()
     # if table already processed, then skip this table
     if file_list and not files_found_in_filestore(tab_entry[1], file_list):
@@ -2663,47 +2722,47 @@ def process_table(tab_entry, file_list, numrows):
         columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
 
     if use_burst_logic:
-        drop_table(load_table)
-        if options.burst_table_set_of_files:
-            define_burst_table(load_table, columns, col_types, burst_columns)
-        else:
+        # Use the existing burst table if it matches
+        # If using managed burst, always CREATE OR REPLACE to create or truncate the table
+        # If using existing and using unmanaged burst, skip burst table creation
+        use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
+        if not use_existing_burst:
+            drop_table(load_table)
+        if not options.use_unmanaged_burst_table:
             create_burst_table(load_table, columns, col_types, burst_columns)
+        elif not use_existing_burst:
+            define_burst_table(load_table, columns, col_types, burst_columns)
 
     t[2] = timer()
 
-    if not use_burst_logic or not options.burst_table_set_of_files:
+    if not use_burst_logic or not options.use_unmanaged_burst_table:
         copy_into_delta_table(load_table, columns, col_types, burst_columns, file_list)
     t[3] = timer()
 
     if use_burst_logic:
         apply_burst_table_changes_to_target(load_table, target_table, columns, tab_entry[3], partition_cols, target_cols)
         t[4] = timer()
-        drop_table(load_table)
-        t[5] = timer()
     else:
         t[4] = t[3]
-        t[5] = t[3]
 
     file_counter += len(file_list)
     delete_files_from_filestore(file_list)
     delete_other_files_from_filestore()
 
-    t[6] = timer()
-    trace(3, "All times: {0:.2f}:  {1:.2f} {2:.2f} {3:.2f} {4:.2f} {5:.2f} {6:.2f}".format(t[6]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3], t[5]-t[4], t[6]-t[5]))
+    t[5] = timer()
+    trace(3, "All times: {0:.2f}:  {1:.2f} {2:.2f} {3:.2f} {4:.2f} {5:.2f}".format(t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3], t[5]-t[4]))
     if use_burst_logic:
-        if options.burst_table_set_of_files:
+        if options.use_unmanaged_burst_table:
             trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
                      " verify files: {3:.2f}s,"
                      " create burst: {4:.2f}s,"
-                     " merge into target: {5:.2f}s,"
-                     " drop burst: {6:.2f}s".format(numrows, target_table, t[6]-t[0], t[1]-t[0], t[2]-t[1], t[4]-t[3], t[5]-t[4]))
+                     " merge into target: {5:.2f}s,".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[4]-t[3]))
         else:
             trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
                      " verify files: {3:.2f}s,"
                      " create burst: {4:.2f}s,"
                      " copy into burst: {5:.2f}s,"
-                     " merge into target: {6:.2f}s,"
-                     " drop burst: {7:.2f}s".format(numrows, target_table, t[6]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3], t[5]-t[4]))
+                     " merge into target: {6:.2f}s,".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
     else:
         if options.mode == "refr_write_end":
             init_clause = ''
@@ -2713,7 +2772,7 @@ def process_table(tab_entry, file_list, numrows):
                 init_clause = " create target: {0:.2f}s,".format(t[2]-t[1])
             trace(0, "Refresh of '{0}', {1} rows, took {2:.2f} seconds:"
                      "{3}"
-                     " copy into target: {4:.2f}s".format(target_table, numrows, t[6]-t[0], init_clause, t[3]-t[2]))
+                     " copy into target: {4:.2f}s".format(target_table, numrows, t[5]-t[0], init_clause, t[3]-t[2]))
         else:
             trace(0, "Copy of {0} rows into {1} took {2:.2f} seconds".format(numrows, target_table, t[5]-t[0]))
 

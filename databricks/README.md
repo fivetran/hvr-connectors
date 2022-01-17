@@ -300,3 +300,4 @@ not set table properties during refresh.
 | 1.38    | 11/16/21 | Drop target table if necessary before creating it |
 | 1.39    | 11/17/21 | Restore support for HVR_DBRK_PARALLEL - Linux only |
 | 1.40    | 12/17/21 | Added support for refresh/create of an empty table |
+| 1.41    | 01/06/22 | Only create burst table if it does not match target table |
