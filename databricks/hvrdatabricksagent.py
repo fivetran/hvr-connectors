@@ -274,6 +274,7 @@
 #     12/17/2021 RLR v1.40 Added support for refresh/create of an empty table
 #     01/06/2022 RLR v1.41 Only create the burst table if it does not exist, or
 #                          if it does not match the target table
+#     01/19/2022 RLR v1.42 Fixed table wildcard matching with '!' operator
 #
 ################################################################################
 import sys
@@ -290,7 +291,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.41"
+VERSION = "1.42"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1427,8 +1428,16 @@ def breakup_length(lenval):
     return lenval[:comma],lenval[comma+1:]
 
 def table_matches(configured, value):
-    trace(2, "ColumnProperties configured for table '{}' matching '{}': {}".format(configured, value, fnmatch.fnmatch(value, configured)))
-    return configured == '*' or fnmatch.fnmatch(value, configured)
+    matches = False
+    if configured == '*':
+        matches = True
+    else:
+        if configured.startswith("!"):
+            matches = not fnmatch.fnmatch(value, configured[1:])
+        else:
+            matches = fnmatch.fnmatch(value, configured)
+    trace(2, "ColumnProperties configured for table '{}' matching '{}': {}".format(configured, value, matches))
+    return matches
 
 def remove_identity(ctype):
     if len(ctype) > len(' identity'):
