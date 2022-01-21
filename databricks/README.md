@@ -302,3 +302,4 @@ not set table properties during refresh.
 | 1.40    | 12/17/21 | Added support for refresh/create of an empty table |
 | 1.41    | 01/06/22 | Only create burst table if it does not match target table |
 | 1.42    | 01/19/22 | Fixed table wildcard matching with '!' operator |
+| 1.42    | 01/21/22 | Fixed 'table not found' check; default unmanaged_burst to OFF |

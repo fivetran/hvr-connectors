@@ -275,6 +275,8 @@
 #     01/06/2022 RLR v1.41 Only create the burst table if it does not exist, or
 #                          if it does not match the target table
 #     01/19/2022 RLR v1.42 Fixed table wildcard matching with '!' operator
+#     01/21/2022 RLR v1.43 Fixed check for "Table not found" from DESCRIBE
+#                          Default unmanaged burst to "OFF"
 #
 ################################################################################
 import sys
@@ -291,7 +293,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.42"
+VERSION = "1.43"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -349,7 +351,7 @@ class Options:
     line_separator = ''
     load_burst_delay = None
     merge_delay = None
-    unmanaged_burst = 'Auto'
+    unmanaged_burst = 'Off'
     burst_table_set_of_files = False
     external_loc = ''
     downshift_name = False
@@ -2327,7 +2329,7 @@ def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
                 return False
             all_columns.remove(colname)
     except pyodbc.Error as ex:
-        if "Table or view not found for 'DESCRIBE TABLE'" in ex.args[1]:
+        if "Table or view not found" in ex.args[1]:
             return False
         print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
@@ -2409,7 +2411,7 @@ def describe_table(table_name, columns, burst_columns):
                 targ_cols.append(colname)
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
-        if "Table or view not found for 'DESCRIBE TABLE'" in ex.args[1]:
+        if "Table or view not found" in ex.args[1]:
             return col_list, col_types, part_cols, targ_cols, table_type
         print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
