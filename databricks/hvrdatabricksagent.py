@@ -277,6 +277,7 @@
 #     01/19/2022 RLR v1.42 Fixed table wildcard matching with '!' operator
 #     01/21/2022 RLR v1.43 Fixed check for "Table not found" from DESCRIBE
 #                          Default unmanaged burst to "OFF"
+#     01/22/2022 RLR v1.44 Strip leading & trailing spaces from HVRCONNECT after decode
 #
 ################################################################################
 import sys
@@ -293,7 +294,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.43"
+VERSION = "1.44"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1756,7 +1757,7 @@ def initialize_hvr_connect():
         print("Exception decoding HVR_DBRK_HVRCONNECT: {}".format(ex))
         raise Exception("Invalid Base64 string in HVR_DBRK_HVRCONNECT; cannot decode")
     trace(4, "Decoded connect string = {}".format(hvr_connect))
-    args = hvr_connect.split(' ')
+    args = hvr_connect.strip().split(' ')
     for a in range(0, len(args)):
         if args[a].startswith("'"):
             astr = args[a]
