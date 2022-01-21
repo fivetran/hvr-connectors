@@ -304,3 +304,4 @@ not set table properties during refresh.
 | 1.42    | 01/19/22 | Fixed table wildcard matching with '!' operator |
 | 1.43    | 01/21/22 | Fixed 'table not found' check; default unmanaged_burst to OFF |
 | 1.44    | 01/21/22 | Strip leading & trailing spaces from HVRCONNECT after decode |
+| 1.45    | 01/21/22 | Fixed processing of DESCRIBE with column named 'name' |
