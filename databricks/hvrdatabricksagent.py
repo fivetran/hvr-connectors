@@ -278,6 +278,7 @@
 #     01/21/2022 RLR v1.43 Fixed check for "Table not found" from DESCRIBE
 #                          Default unmanaged burst to "OFF"
 #     01/22/2022 RLR v1.44 Strip leading & trailing spaces from HVRCONNECT after decode
+#     01/22/2022 RLR v1.45 Fixed processing of DESCRIBE with column named 'name'
 #
 ################################################################################
 import sys
@@ -294,7 +295,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.44"
+VERSION = "1.45"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2379,6 +2380,7 @@ def describe_table(table_name, columns, burst_columns):
     targ_cols = []
     table_type = []
     external_loc = ''
+    add_columns = True
     add_partitions = False
     table_details = False
     try:
@@ -2389,6 +2391,7 @@ def describe_table(table_name, columns, burst_columns):
                 break
             trace(3, "  {}".format(col))
             if col[0] == "# Partitioning":
+                add_columns = False
                 add_partitions = True
                 continue
             if col[0] == "# Detailed Table Information":
@@ -2406,6 +2409,8 @@ def describe_table(table_name, columns, burst_columns):
                 continue
             if table_details and col[0] == "Type":
                 table_type = [col[1]]
+                continue
+            if not add_columns:
                 continue
             colname = col[0].lower()
             if len(col) > 1 and colname in col_list:
