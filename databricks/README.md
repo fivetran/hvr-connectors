@@ -305,3 +305,4 @@ not set table properties during refresh.
 | 1.43    | 01/21/22 | Fixed 'table not found' check; default unmanaged_burst to OFF |
 | 1.44    | 01/21/22 | Strip leading & trailing spaces from HVRCONNECT after decode |
 | 1.45    | 01/21/22 | Fixed processing of DESCRIBE with column named 'name' |
+| 1.46    | 01/24/22 | Fixed error: 'Options' object has no attribute 'use_unmanaged_burst_table' |

@@ -279,6 +279,7 @@
 #                          Default unmanaged burst to "OFF"
 #     01/22/2022 RLR v1.44 Strip leading & trailing spaces from HVRCONNECT after decode
 #     01/22/2022 RLR v1.45 Fixed processing of DESCRIBE with column named 'name'
+#     01/24/2022 RLR v1.46 Fixed error: 'Options' object has no attribute 'use_unmanaged_burst_table'
 #
 ################################################################################
 import sys
@@ -295,7 +296,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.45"
+VERSION = "1.46"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -354,7 +355,7 @@ class Options:
     load_burst_delay = None
     merge_delay = None
     unmanaged_burst = 'Off'
-    burst_table_set_of_files = False
+    use_unmanaged_burst_table = False
     external_loc = ''
     downshift_name = False
     use_wasb = False
@@ -491,12 +492,6 @@ def env_load():
             options.merge_delay = float(merge_delay)
         except Exception as err:
             print("Invalid value '{}' defined for HVR_DBRK_MERGE_DELAY; must be numeric".format(merge_delay))
-    unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
-    if unmanaged_burst:
-        if unmanaged_burst.upper() == 'ON':
-            options.unmanaged_burst = 'On'
-        else:
-            options.unmanaged_burst = 'Off'
     fileops = os.getenv('HVR_DBRK_FILESTORE_OPS', '')
     if fileops.lower() == 'none':
         options.filestore_ops = 0
@@ -508,6 +503,16 @@ def env_load():
         options.filestore_ops = ALL_FILEOPS
     elif fileops:
         raise Exception("Invalid file operation '{}' defined in HVR_DBRK_FILESTORE_OPS; valid values are 'check','delete','none','+cleanup'".format(fileops))
+    unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
+    if unmanaged_burst:
+        if unmanaged_burst.upper() == 'ON':
+            if (options.filestore_ops & FileOps.CHECK) == 0:
+                print("Check is disabled in HVR_DBRK_FILESTORE_OPS; cannot enable HVR_DBRK_UNMANAGED_BURST")
+                options.unmanaged_burst = 'Off'
+            else:
+                options.unmanaged_burst = 'On'
+        else:
+            options.unmanaged_burst = 'Off'
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
