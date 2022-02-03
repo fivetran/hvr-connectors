@@ -280,6 +280,9 @@
 #     01/22/2022 RLR v1.44 Strip leading & trailing spaces from HVRCONNECT after decode
 #     01/22/2022 RLR v1.45 Fixed processing of DESCRIBE with column named 'name'
 #     01/24/2022 RLR v1.46 Fixed error: 'Options' object has no attribute 'use_unmanaged_burst_table'
+#     01/25/2022 RLR v1.47 Fixed MERGE failure if a key column is updated
+#                          Fixed recovery issue from 1.41 changes: COPY INTO force=true
+#     02/02/2022 RLR v1.48 Fixed DELETE SQL multiple key columns issue introduced by 1.47
 #
 ################################################################################
 import sys
@@ -296,7 +299,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.46"
+VERSION = "1.48"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2262,6 +2265,26 @@ def execute_sql(sql_stmt, sql_name):
         print("Executing {0} SQL generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0])))
         raise
 
+def sql_succeeded(sql_stmt, sql_name, return_if_error_has):
+    trace(2, "Execute: {0}".format(sql_stmt))
+    try:
+        Connections.cursor.execute(sql_stmt)
+        Connections.cursor.commit()
+    except pyodbc.Error as ex:
+        if return_if_error_has in str(ex):
+            print("Source target row mismatch")
+            trace(3, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
+            return False
+        print("{0} SQL failed: {1}".format(sql_name, sql_stmt))
+        raise ex
+    except Exception as ex:
+        print("Executing {0} SQL raised: {1}".format(sql_name, type(ex)))
+        raise ex
+    except:
+        print("Executing {0} SQL generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0])))
+        raise
+    return True
+
 def set_database():
     set_sql = "USE {}".format(options.database)
     trace(1, set_sql)
@@ -2575,6 +2598,24 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
         merge_sql += ")"
 
     trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
+    if sql_succeeded(merge_sql, 'Merge', 'multiple source rows matched'):
+        return
+
+    if options.no_isdeleted_on_target:
+        delete_sql = "DELETE FROM {} as tg WHERE EXISTS (SELECT ".format(target_table)
+        for key in keys:
+            delete_sql += key + ','
+        delete_sql = delete_sql[:-1]
+        delete_sql += " FROM {} WHERE ".format(burst_table)
+        for key in keys:
+            delete_sql += 'tg.'+ key + '=' + key + ' AND '
+        delete_sql += " {} = 0)".format(options.optype)
+        trace(1, "Delete rows from {} where {}.{} == 0".format(target_table, burst_table, options.optype))
+        execute_sql(delete_sql, 'Delete')
+    delete_sql = "DELETE FROM {} WHERE {} = 0".format(burst_table, options.optype)
+    trace(1, "Delete from {} where {} == 0".format(burst_table, options.optype))
+    execute_sql(delete_sql, 'Delete')
+    trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
 def apply_inserts(burst_table, target_table, columns, partition_cols):
@@ -2673,7 +2714,7 @@ def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list):
             copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}', 'lineSep' = '{}') ".format(options.delimiter, options.line_separator)
         else:
             copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}') ".format(options.delimiter)
-    copy_sql += "COPY_OPTIONS ('force' = 'false')"
+    copy_sql += "COPY_OPTIONS ('force' = 'true')"
 
     trace(1, "Copying from the file store into " + load_table)
     execute_sql(copy_sql, 'Copy')
