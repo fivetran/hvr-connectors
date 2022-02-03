@@ -141,6 +141,10 @@
 #        If set during refresh the connector will delete from <target> where <refresh restrict>
 #        instead of truncating the target table.  This option is not compatible with "-r"
 #
+#     HVR_DBRK_TARGET_NAMES      (optional)
+#        Can be used to define the target table name.  Format is:
+#           hvr_tbl_name=<name>[:hvr_tbl_name=<name>]...
+#
 #     HVR_DBRK_PARALLEL          (optional)
 #        If set, and if running on a POSIX OS, the tables will be processed in parallel.
 #
@@ -284,6 +288,7 @@
 #                          Fixed recovery issue from 1.41 changes: COPY INTO force=true
 #     02/02/2022 RLR v1.48 Fixed DELETE SQL multiple key columns issue introduced by 1.47
 #     02/02/2022 RLR v1.49 Support SoftDelete target
+#     02/03/2022 RLR v1.50 Add environment variable for setting target table name
 #
 ################################################################################
 import sys
@@ -300,7 +305,7 @@ import pyodbc
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.49"
+VERSION = "1.50"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -371,6 +376,7 @@ class Options:
     isdeleted = 'is_deleted'
     no_isdeleted_on_target = True
     ignore_columns = []
+    target_names = {}
     target_is_timekey = False
     truncate_target_on_refresh = True
     filestore_ops = DEFAULT_FILEOPS
@@ -538,6 +544,15 @@ def env_load():
             options.set_tblproperties = ''
         else:
             options.set_tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES')
+    if os.getenv('HVR_DBRK_TARGET_NAMES', ''):
+        targetnames = os.getenv('HVR_DBRK_TARGET_NAMES', '').split(':')
+        for targetname in targetnames:
+            if not '=' in targetname:
+                raise Exception("Format of HVR_DBRK_TARGET_NAMES is hvr_tbl_name=<target table name>:...")
+            sep = targetname.find('=')
+            if targetname[:sep] in options.target_names.keys():
+                raise Exception("Target name defined twice for {}".format(targetname[:sep]))
+            options.target_names[targetname[:sep]] = targetname[sep+1:]
     options.agent_env = load_agent_env()
     get_multidelete_map()
 
@@ -680,6 +695,10 @@ def trace_input():
         trace(3, "Delay {} seconds before merging from the burst table after loading it".format(options.merge_delay))
     if options.insert_after_merge_dels_and_upds:
         trace(3, "For CDC MERGE only UPDATES & DELETES; use INSERT sql for INSERTS")
+    if options.target_names:
+        trace(3, "Target names configured:")
+        for key, val in options.target_names.items():
+            trace(3, "   {} = {}".format(key, val))
 
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh = {}".format(not options.truncate_target_on_refresh))
@@ -1720,6 +1739,8 @@ def get_target_basename(table):
     return ''
 
 def get_target_tablename(table):
+    if table in options.target_names.keys():
+        return options.target_names[table]
     basename = get_target_basename(table)
     if basename:
         return basename
@@ -1870,6 +1891,11 @@ def table_file_name_map():
 
     hvr_tbl_names = options.agent_env['HVR_TBL_NAMES'].split(":")
     hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
+    if options.target_names:
+        for idx, name in enumerate(hvr_tbl_names):
+            if name in options.target_names.keys() and idx < len(hvr_base_names):
+                trace(2, "Table '{}', basename '{}', target name '{}'".format(name, hvr_base_names[idx], options.target_names[name]))
+                hvr_base_names[idx] = options.target_names[name]
     hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
     hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
     files = options.agent_env.get('HVR_FILE_NAMES', [])
