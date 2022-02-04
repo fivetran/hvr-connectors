@@ -289,6 +289,7 @@
 #     02/02/2022 RLR v1.48 Fixed DELETE SQL multiple key columns issue introduced by 1.47
 #     02/02/2022 RLR v1.49 Support SoftDelete target
 #     02/03/2022 RLR v1.50 Add environment variable for setting target table name
+#     02/04/2022 RLR v1.51 Use REST APIs for HVR6 instead of commands
 #
 ################################################################################
 import sys
@@ -302,10 +303,11 @@ import fnmatch
 import subprocess
 import json
 import pyodbc
+import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.50"
+VERSION = "1.51"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -389,6 +391,7 @@ class Options:
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
+    hvr6 = None
     odbc = None
     cursor = None
     s3_client = None
@@ -1236,199 +1239,226 @@ def merge_action_with_config_action(actlist, config_actlist):
 
 ##### HVR 6 functions ############################################################
 
-def get_key_value(line):
-    key = value = ''
-    s1 = line.find('"')
-    if s1 >= 0:
-        s2 = line.find('"', s1+1)
-        if s1 >= 0 and s2 > s1:
-            key = line[s1+1:s2]
-            if line[s2+1] == ':':
-                value = line[s2+3:]
-                if value != "{" and value != "]":
-                    if value[-1] == ',':
-                        value = value[:-1]
-                    if value[0] == '"':
-                        value = value[1:-1]
-    else:
-        s1 = line.find('{')
-        if s1 >= 0:
-            value = line[s1:s1+1]
+def _exception_from_packed_args(exception_cls, args=None, kwargs=None):
+    if args is None:
+        args = ()
+    if kwargs is None:
+        kwargs = {}
+    return exception_cls(*args, **kwargs)
+
+class PyrlrError(Exception):
+    """
+    The base exception class for Pyrlr exceptions.
+    :ivar msg: The descriptive message associated with the error.
+    """
+
+    fmt = "An unspecified error occurred"
+
+    def __init__(self, **kwargs):
+        msg = self.fmt.format(**kwargs)
+        Exception.__init__(self, msg)
+        self.kwargs = kwargs
+
+        if self.kwargs.get("status_code"):
+            self.status_code = self.kwargs["status_code"]
+        if self.kwargs.get("message"):
+            message = self.kwargs["message"]
+            if message.startswith("F_"):
+                self.message = message[10:]
+                self.error_code = message[:8]
+            else:
+                self.message = message
+                self.error_code = None
+
+    # __reduce__ is for pickling
+    def __reduce__(self):
+        return _exception_from_packed_args, (self.__class__, None, self.kwargs)
+
+class RestError(PyrlrError):
+    """Raised for any error returned from a REST call.
+    :ivar status_code: HTTP status code
+    :ivar message: Error message returned in HTTP payload
+    """
+    fmt = "{status_code}: {message}"
+
+class LoginError(PyrlrError):
+    """Login failed.`
+    :ivar status_code: HTTP status code
+    :ivar message: Error message returned in HTTP payload
+    """
+    fmt = "{status_code}: {message}"
+
+class ConnectionError(PyrlrError):
+    """HTTP request failed to execute`
+    :ivar message: Text of the underlying rquests exception
+    """
+    fmt = "{message}"
+
+class Client:
+    username: str
+    password: str
+    uri: str
+    bearer_token: str = None
+    bearer_token_valid_until: int = 0
+
+    def __init__(self, uri=None, username=None, password=None):
+        self.username = username
+        self.password = password
+        self.uri = uri
+
+    def login(self):
+        self.login_token()
+        return None  # do not leak the token
+
+    def header_nonauth(self):
+        return {"Content-type": "application/json", "Accept": "application/json"}
+
+    def header_auth(self, bearer_token):
+        return {
+            "Content-type": "application/json",
+            "Accept": "application/json",
+            "Authorization": "bearer " + bearer_token,
+        }
+
+    def login_token(self):
+        # ToDo - use refresh token if possible
+        if self.bearer_token_valid_until < time.time():
+            try:
+                rq = requests.post(
+                    self.uri + "/auth/v1/password",
+                    data=json.dumps(
+                        {
+                            "username": self.username,
+                            "password": self.password,
+                            "refresh": "token",
+                        }
+                    ),
+                    headers=self.header_nonauth(),
+                )
+                if rq.ok:
+                    self.bearer_token = rq.json()["access_token"]
+                    # Force renew 60 seconds before expiry
+                    self.bearer_token_valid_until = time.time() + (
+                        rq.json()["expires_in"] - 60
+                    )
+                    return self.bearer_token
+
+            except Exception as e:
+                raise ConnectionError(
+                    message="Cannot login: " + str(e)
+                )
+
+            raise LoginError(
+                status_code=rq.status_code, message=rq.text
+            )
+
         else:
-            s1 = line.find('}')
-            if s1 >= 0:
-                value = line[s1:s1+1]
-    return key, value
+            return self.bearer_token
 
-def get_list(line):
-    retval = []
-    s1 = line.find('"')
-    while s1 >= 0 and s1 < len(line):
-        s2 = line.find('"', s1+1)
-        retval.append(line[s1+1:s2])
-        s1 = line.find('"', s2+1)
-    return retval
+    def get(self, path, query, headers, payload, is_json):
+        headers.update(self.header_auth(self.login_token()))
+        rq = requests.get(
+            self.uri + path,
+            params=query,
+            data=json.dumps(payload),
+            headers=headers,
+        )
 
-def temp_export_file_name():
-    hvr_config = os.getenv('HVR_CONFIG', '')
-    if not hvr_config:
-        raise Exception("$HVR_CONFIG must be defined")
-    tempname = "{0}_{1}_{2}.export.json".format(str(time.time()), options.hub, options.channel)
-    tempexpfile = os.path.join(hvr_config, "tmp")
-    tempexpfile = os.path.join(tempexpfile, tempname)
-    return tempexpfile
+        if rq.ok:
+            if rq.text and is_json:
+                return rq.json()
+            elif rq.text:
+                return rq.text
+            else:
+                return None
 
-def get_channel_export():
-    tempexpfile = temp_export_file_name()
-    cmd = []
-    cmd.append("hvrdefinitionexport")
-    cmd.append("-c{}".format(options.channel))
-    for opt in options.hvr_opts:
-        cmd.append(opt)
-    cmd.append(tempexpfile)
-    cmdstr = ''
-    for c in cmd:
-        cmdstr += c + ' '
-    trace(2, "Run Command: {}".format(cmdstr))
-    try:
-        rval = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-        if options.trace >= 2 and len(rval):
-            print("return from run command: {}".format(rval))
-    except Exception as e:
-        print("Command failed: {}".format(cmdstr))
-        print("This may be due to 'Refresh token invalid or expired'")
-        print("Please run command as hvr user in the same location as the agent runs to see more information")
-        raise Exception("Error getting channel export: {}".format(e))
-    return tempexpfile
+        raise RestError(
+            status_code=rq.status_code, message=rq.text
+        )
 
-class Options:
-    NONE = 0
-    CHANNEL = 1
-    TABLE = 2
-    COLUMN = 3
+def get6_table(tablename):
+    ret = Connections.hvr6.get("/api/latest/hubs/{hub}/definition/channels/{channel}/tables/{table}".format(
+         hub=options.hub, channel=options.channel, table=tablename), {'fetch':'cols'}, {}, None, True)
+    return ret
 
-class ChannelInfo:
-    GENERAL = 0
-    TABLES = 1
-    COLUMN = 2
-    LOCATION_GROUPS = 3
-    ACTIONS = 4
+def get6_location_groups():
+    ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/loc_groups".format(
+         options.hub, options.channel), {'fetch':'members'}, {}, None, True)
+    groups = {}
+    for k,v in ret.items():
+        groups[k] = v['members']
+    return groups
+
+def get6_table_properties():
+    query = {'action_type':'TableProperties'}
+    ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/actions".format(
+         options.hub, options.channel), query, {}, None, True)
+    return ret
+
+def get6_column_properties():
+    query = {'action_type':'ColumnProperties'}
+    ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/actions".format(
+         options.hub, options.channel), query, {}, None, True)
+    return ret
 
 def hvr6_init_createtable_info():
     global g_table_props
     global g_column_props
 
+    grp_locations = get6_location_groups()
+    for grp,locs in grp_locations.items():
+        if options.location in locs:
+            if options.locgroup:
+                options.locgroup = '*'
+            else:
+                options.locgroup = grp
+
     g_table_props = []
-    g_column_props = []
-    channel = False
-    channelinfo = ChannelInfo.GENERAL
-    thisgroup = ''
-    grp_locations = {}
-    action = [options.channel, '', '', '', '', '', {}]
-
-    with open(options.channel_export, "r") as f:
-        for line in f:
-            key, value = get_key_value(line[:-1])
-            if not key:
-                if channelinfo == ChannelInfo.ACTIONS:
-                    if action[C_GRP] == options.location:
-                        action[C_LOC] = options.location
-                        action[C_GRP] = ''
-                    if options.location == action[C_LOC] or options.locgroup == '*' or options.locgroup == action[C_GRP]:
-                        if action[C_ACT] == 'TableProperties':
-                            g_table_props.append(action)
-                        if action[C_ACT] == 'ColumnProperties':
-                            g_column_props.append(action)
-                    action = [options.channel, '', '', '', '', '', {}]
-                continue;
-            if channel and channelinfo == ChannelInfo.LOCATION_GROUPS:
-                if not thisgroup:
-                    thisgroup = key
-                elif key == "members":
-                    grp_locations[thisgroup] = get_list(value)
-                    thisgroup = ''
-            if channel and key == "loc_groups":
-                channelinfo = ChannelInfo.LOCATION_GROUPS
-                thisgroup = ''
-            if channel and channelinfo == ChannelInfo.ACTIONS:
-                if key == "type":
-                    action[C_ACT] = value
-                elif key == "loc_scope":
-                    action[C_GRP] = value
-                elif key == "table_scope":
-                    action[C_TBL] = value
-                elif key != "params" and value:
-                    action[C_PRM][key] = value
-            if channel and key == "actions":
-                channelinfo = ChannelInfo.ACTIONS
-                inactions = True
-                for grp,locs in grp_locations.items():
-                    if options.location in locs:
-                        if options.locgroup:
-                            options.locgroup = '*'
-                        else:
-                            options.locgroup = grp
-            if key == "channel":
-                channel = (value == options.channel)
-
-    print("grplocs: {}".format(grp_locations))
-    
+    table_props = get6_table_properties()
+    for tp in table_props:
+        action = [options.channel, tp['loc_scope'], tp['table_scope'], '', tp['type'], '', tp['params']]
+        if options.location == action[C_LOC] or options.locgroup == '*' or options.locgroup == action[C_GRP]:
+            g_table_props.append(action)
     show_actions("TableProperties", g_table_props)
+
+    g_column_props = []
+    column_props = get6_column_properties()
+    for tp in column_props:
+        action = [options.channel, tp['loc_scope'], tp['table_scope'], '', tp['type'], '', tp['params']]
+        if options.location == action[C_LOC] or options.locgroup == '*' or options.locgroup == action[C_GRP]:
+            g_column_props.append(action)
     show_actions("ColumnProperties", g_column_props)
 
 def hvr6_get_table_info(tablename):
-    channel = False
-    channelinfo = ChannelInfo.GENERAL
-    thistable = 0
+    table_props = get6_table(tablename)
 
-    targetname = get_target_basename(tablename)
     target_columns = []
     column = []
-    with open(options.channel_export, "r") as f:
-        for line in f:
-            key, value = get_key_value(line[:-1])
-            if thistable:
-                if value == '{':
-                    thistable = thistable + 1
-                elif value == '}':
-                    thistable = thistable - 1
-            if channel and key == "tables":
-                channelinfo = ChannelInfo.TABLES
-            if channel and key == "actions":
-                channelinfo = ChannelInfo.ACTIONS
-                thistable = 0
-            if channel and thistable:
-                if not targetname and key == "base_name":
-                    targetname = value
-                if thistable == 2 and column:
-                    target_columns.append(column)
-                    column = []
-                if not key:
-                    continue
-                if thistable == 3:
-                    if not column:
-                        column = [key, key, '0', '', '0', '0']
-                    else:
-                        if key == "data_type":
-                            column[3] = value
-                        if key == "key":
-                            column[2] = value
-                if thistable == 4:
-                    if key == "bytelen":
-                        column[4] = value
-                    if key == "charlen":
+    for nam, props in table_props['cols'].items():
+        if column:
+            target_columns.append(column)
+        column = [nam, nam, '0', '', '0', '0']
+        for prop,value in props.items():
+            if prop == "data_type":
+                column[3] = value
+            if prop == "key":
+                column[2] = value
+            if prop == "attributes":
+                for akey,aval in value.items():
+                    if akey == "bytelen":
+                        column[4] = str(aval)
+                    if akey == "charlen":
                         charlen = column[4]
                         if charlen:
                             charlen += ','
-                        charlen += value
+                        charlen += str(aval)
                         column[4] = charlen
-                    if key == "nullable" and value == "true":
+                    if akey == "nullable" and aval == "true":
                         column[5] = '1'
-            if channel and channelinfo == ChannelInfo.TABLES and key == tablename:
-                thistable = 1
-            if key == "channel":
-                channel = (value == options.channel)
-    return targetname, target_columns
+    if column:
+        target_columns.append(column)
+
+    return target_columns
 
 #### Create table ###############################################################
 
@@ -1798,34 +1828,38 @@ def initialize_hvr_connect():
             arg = arg[1:-1]
     for arg in args:
         trace(4, "  {}".format(arg))
-    a = 0
-    while True:
-         if a >= len(args) or not args[a].startswith('-'):
-             break
-         opt = args[a][1]
-         if not options.hvr_6 and opt != 'h' and opt != 'u':
-             print("Invalid option {} found as part of the Hub login options", args[a])
-             options.hvr_opts = []
-             return
-         if len(args[a]) == 2:
-             options.hvr_opts.append(args[a] + args[a+1])
-             a = a + 1
-         else:
-             options.hvr_opts.append(args[a])
-         a = a + 1
-    if a < len(args):
-        options.hvr_opts.append(args[a])
-    if options.hvr_6 and len(options.hvr_opts) != 2:
-        raise Exception("Expecting HVR connection in the form '-R<url> <hubname>'; found {}".format(options.hvr_opts))
     if not options.hvr_6:
+        a = 0
+        while True:
+             if a >= len(args) or not args[a].startswith('-'):
+                 break
+             opt = args[a][1]
+             if not options.hvr_6 and opt != 'h' and opt != 'u':
+                 print("Invalid option {} found as part of the Hub login options", args[a])
+                 options.hvr_opts = []
+                 return
+             if len(args[a]) == 2:
+                 options.hvr_opts.append(args[a] + args[a+1])
+                 a = a + 1
+             else:
+                 options.hvr_opts.append(args[a])
+             a = a + 1
+        if a < len(args):
+            options.hvr_opts.append(args[a])
         trace(4, "HVR connect using = {}".format(options.hvr_opts))
         hubname = get_hub_name()
         trace(2, "Connection to HVR valid, hubdb = {}".format(hubname))
-    else:
-        options.hub = options.hvr_opts[-1]
-        trace(2, "Connection to HVR valid, hubdb = {}".format(options.hvr_opts[-1]))
-        options.channel_export = get_channel_export()
-        trace(3, "Channel export: {}".format(options.channel_export))
+    if options.hvr_6:
+        if len(args) != 4:
+            raise Exception("Expecting HVR connection in the form '<uri> <hubname> <username> <password>'; found {}".format(options.hvr_opts))
+        uri = args[0]
+        user = args[2]
+        pwd = args[3]
+        if uri.startswith("-R"):
+            uri = uri[2:]
+        options.hub = args[1]
+        Connections.hvr6 = Client(uri=uri, username=user, password=pwd)
+        trace(2, "Connection to HVR valid, hubdb = {}".format(options.hub))
 
 ##### Main function ############################################################
 
@@ -2538,16 +2572,15 @@ def drop_target_table(target_table, table_type):
     if do_drop:
         drop_table(target_table)
 
-def recreate_target_table(hvr_table, table_type):
+def recreate_target_table(target_table, hvr_table, table_type):
     #  get the create table DDL - only drop when successful
     if options.hvr_6:
-        target_name, columns = hvr6_get_table_info(hvr_table)
+        columns = hvr6_get_table_info(hvr_table)
     else:
-        target_name = get_target_tablename(hvr_table)
         columns = target_columns(hvr_table)
-    drop_target_table(target_name, table_type)
-    create_sql = get_create_table_ddl(hvr_table, target_name, columns)
-    trace(1, "Creating table " + target_name)
+    drop_target_table(target_table, table_type)
+    create_sql = get_create_table_ddl(hvr_table, target_table, columns)
+    trace(1, "Creating table " + target_table)
     execute_sql(create_sql, 'Create')
 
 #
@@ -2853,7 +2886,7 @@ def process_table(tab_entry, file_list, numrows):
                 options.set_tblproperties = ''
             if options.recreate_tables_on_refresh:
                 # pass the HVR table name - the repository will provide the base_name
-                recreate_target_table(tab_entry[1], table_type)
+                recreate_target_table(target_table, tab_entry[1], table_type)
             else:
                 if options.truncate_target_on_refresh:
                     if options.refresh_restrict:
