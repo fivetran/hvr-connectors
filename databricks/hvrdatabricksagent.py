@@ -290,6 +290,7 @@
 #     02/02/2022 RLR v1.49 Support SoftDelete target
 #     02/03/2022 RLR v1.50 Add environment variable for setting target table name
 #     02/04/2022 RLR v1.51 Use REST APIs for HVR6 instead of commands
+#     02/11/2022 RLR v1.52 Fix SoftDelete - use 2 merge statements
 #
 ################################################################################
 import sys
@@ -307,7 +308,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.51"
+VERSION = "1.52"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2688,27 +2689,29 @@ def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys,
         if not col in merge_keys:
             merge_keys.append(col)
 
-    update_sql = "UPDATE {} as tg SET {}=1 WHERE EXISTS (SELECT ".format(target_table,options.isdeleted)
-    for key in keys:
-        update_sql += key + ','
-    update_sql = update_sql[:-1]
-    update_sql += " FROM {} WHERE ".format(burst_table)
-    for key in keys:
-        update_sql += 'tg.'+ key + '=' + key + ' AND '
-    update_sql += " {} = 1)".format(options.isdeleted)
-    trace(1, "Update rows in {} where {}.{} == 1".format(target_table, burst_table, options.isdeleted))
-    execute_sql(update_sql, 'Delete')
-
-    delete_sql = "DELETE FROM {} WHERE {} = 1".format(burst_table, options.isdeleted)
-    trace(1, "Delete from {} where {} == 1".format(burst_table, options.isdeleted))
-    execute_sql(delete_sql, 'Delete')
+    merge_sql = "MERGE INTO {0} a USING (".format(target_table)
+    merge_sql += " SELECT "
+    for key in merge_keys:
+        merge_sql += " b.`{0}` as merge{0},".format(key)
+    merge_sql += " b.* FROM {} b".format(burst_table)
+    merge_sql += " WHERE b.{} = 1) m ".format(options.isdeleted)
+    merge_sql += " ON"
+    for key in merge_keys:
+        merge_sql += " a.`{0}` = merge{0} AND".format(key)
+    merge_sql = merge_sql[:-4]
+    merge_sql += " WHEN MATCHED THEN UPDATE SET"
+    for col in columns:
+        merge_sql += " a.`{0}` = m.`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    trace(1, "Merging deletes from {0} into {1}".format(burst_table, target_table))
+    execute_sql(merge_sql, 'Merge')
 
     merge_sql = "MERGE INTO {0} a USING (".format(target_table)
     merge_sql += " SELECT "
     for key in merge_keys:
         merge_sql += " b.`{0}` as merge{0},".format(key)
     merge_sql += " b.* FROM {} b".format(burst_table)
-    merge_sql += ") m "
+    merge_sql += " WHERE b.{} = 0) m ".format(options.isdeleted)
     merge_sql += " ON"
     for key in merge_keys:
         merge_sql += " a.`{0}` = merge{0} AND".format(key)
@@ -2717,17 +2720,16 @@ def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys,
     for col in columns:
         merge_sql += " a.`{0}` = m.`{0}`,".format(col)
     merge_sql = merge_sql[:-1]
-    if not options.insert_after_merge_dels_and_upds:
-        merge_sql += " WHEN NOT MATCHED AND m.{} = 0 THEN INSERT".format(options.isdeleted)
-        merge_sql += "  ("
-        for col in columns:
-            merge_sql += "`{0}`,".format(col)
-        merge_sql = merge_sql[:-1]
-        merge_sql += ") VALUES ("
-        for col in columns:
-            merge_sql += "m.`{0}`,".format(col)
-        merge_sql = merge_sql[:-1]
-        merge_sql += ")"
+    merge_sql += " WHEN NOT MATCHED AND m.{} = 0 THEN INSERT".format(options.isdeleted)
+    merge_sql += "  ("
+    for col in columns:
+        merge_sql += "`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    merge_sql += ") VALUES ("
+    for col in columns:
+        merge_sql += "m.`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    merge_sql += ")"
     trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
@@ -2765,10 +2767,10 @@ def apply_burst_table_changes_to_target(burst_table, target_table, columns, keyl
 
     if options.no_isdeleted_on_target:
         merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
+        if options.insert_after_merge_dels_and_upds:
+            apply_inserts(burst_table, target_table, target_cols, partition_cols)
     else:
         merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
-    if options.insert_after_merge_dels_and_upds:
-        apply_inserts(burst_table, target_table, target_cols, partition_cols)
 
 def define_burst_table(stage_table, columns, col_types, burst_columns):
     stage_sql = ''
