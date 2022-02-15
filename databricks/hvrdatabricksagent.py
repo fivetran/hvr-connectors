@@ -291,6 +291,7 @@
 #     02/03/2022 RLR v1.50 Add environment variable for setting target table name
 #     02/04/2022 RLR v1.51 Use REST APIs for HVR6 instead of commands
 #     02/11/2022 RLR v1.52 Fix SoftDelete - use 2 merge statements
+#     02/15/2022 RLR v1.53 Fixed logic that validates MANAGED state of table
 #
 ################################################################################
 import sys
@@ -308,7 +309,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.52"
+VERSION = "1.53"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2555,23 +2556,25 @@ def get_create_table_ddl(hvr_table, target_name, columns):
     show_columns(columns)
     return target_create_table(hvr_table, target_name, columns)
 
-def drop_target_table(target_table, table_type):
-    trace(1, "Check if need to drop target table")
+def locations_are_the_same(existing, configured):
+    trace(3, "Compare '{}' to '{}'".format(existing, configured))
+    if existing.startswith('dbfs:') and configured.startswith('/'):
+        existing = existing[5:]
+    return existing == configured
+
+def check_target_table(target_table, table_type):
+    trace(1, "Check if existing table 'MANAGED' status is same as configured")
     trace(2, "Target name: {}; existing type: {}; configured: {}".format(target_table, table_type, options.external_loc))
-    do_drop = False
     if table_type:
         if options.external_loc:
             if table_type[0] != "EXTERNAL":
-                do_drop = True
+                trace(1, "Warning: external location configured; existing table is not external")
             else:
-                external_loc = get_external_loc(target_table)
-                if table_type[1][5:] != external_loc:
-                    do_drop = True
+                if not locations_are_the_same(table_type[1], get_external_loc(target_table)):
+                    trace(1, "Configured external location '{}' does not match existing location '{}'".format(options.external_loc, table_type[1]))
         else:
-            if table_type == "EXTERNAL":
-                do_drop = True
-    if do_drop:
-        drop_table(target_table)
+            if table_type[0] == "EXTERNAL":
+                trace(1, "Warning: external location is not configured; existing table is external")
 
 def recreate_target_table(target_table, hvr_table, table_type):
     #  get the create table DDL - only drop when successful
@@ -2579,7 +2582,7 @@ def recreate_target_table(target_table, hvr_table, table_type):
         columns = hvr6_get_table_info(hvr_table)
     else:
         columns = target_columns(hvr_table)
-    drop_target_table(target_table, table_type)
+    check_target_table(target_table, table_type)
     create_sql = get_create_table_ddl(hvr_table, target_table, columns)
     trace(1, "Creating table " + target_table)
     execute_sql(create_sql, 'Create')
