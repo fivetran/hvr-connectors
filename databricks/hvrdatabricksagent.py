@@ -141,6 +141,10 @@
 #        If set during refresh the connector will delete from <target> where <refresh restrict>
 #        instead of truncating the target table.  This option is not compatible with "-r"
 #
+#     HVR_DBRK_TARGET_NAMES      (optional)
+#        Can be used to define the target table name.  Format is:
+#           hvr_tbl_name=<name>[:hvr_tbl_name=<name>]...
+#
 #     HVR_DBRK_PARALLEL          (optional)
 #        If set, and if running on a POSIX OS, the tables will be processed in parallel.
 #
@@ -280,6 +284,13 @@
 #     01/22/2022 RLR v1.44 Strip leading & trailing spaces from HVRCONNECT after decode
 #     01/22/2022 RLR v1.45 Fixed processing of DESCRIBE with column named 'name'
 #     01/24/2022 RLR v1.46 Fixed error: 'Options' object has no attribute 'use_unmanaged_burst_table'
+#     01/25/2022 RLR v1.47 Fixed MERGE failure if a key column is updated
+#                          Fixed recovery issue from 1.41 changes: COPY INTO force=true
+#     02/02/2022 RLR v1.48 Fixed DELETE SQL multiple key columns issue introduced by 1.47
+#     02/02/2022 RLR v1.49 Support SoftDelete target
+#     02/03/2022 RLR v1.50 Add environment variable for setting target table name
+#     02/04/2022 RLR v1.51 Use REST APIs for HVR6 instead of commands
+#     02/11/2022 RLR v1.52 Fix SoftDelete - use 2 merge statements
 #
 ################################################################################
 import sys
@@ -293,10 +304,11 @@ import fnmatch
 import subprocess
 import json
 import pyodbc
+import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.46"
+VERSION = "1.52"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -367,6 +379,7 @@ class Options:
     isdeleted = 'is_deleted'
     no_isdeleted_on_target = True
     ignore_columns = []
+    target_names = {}
     target_is_timekey = False
     truncate_target_on_refresh = True
     filestore_ops = DEFAULT_FILEOPS
@@ -379,6 +392,7 @@ class Options:
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
+    hvr6 = None
     odbc = None
     cursor = None
     s3_client = None
@@ -534,6 +548,15 @@ def env_load():
             options.set_tblproperties = ''
         else:
             options.set_tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES')
+    if os.getenv('HVR_DBRK_TARGET_NAMES', ''):
+        targetnames = os.getenv('HVR_DBRK_TARGET_NAMES', '').split(':')
+        for targetname in targetnames:
+            if not '=' in targetname:
+                raise Exception("Format of HVR_DBRK_TARGET_NAMES is hvr_tbl_name=<target table name>:...")
+            sep = targetname.find('=')
+            if targetname[:sep] in options.target_names.keys():
+                raise Exception("Target name defined twice for {}".format(targetname[:sep]))
+            options.target_names[targetname[:sep]] = targetname[sep+1:]
     options.agent_env = load_agent_env()
     get_multidelete_map()
 
@@ -645,7 +668,7 @@ def trace_input():
     if options.database:
         trace(3, "Use database {}".format(options.database))
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
-    trace(3, "Isdeleted column is {}; column exists on target = {}".format(options.isdeleted, (not options.no_isdeleted_on_target)))
+    trace(3, "Isdeleted column is {}; column exists on target = {}; use SoftDelete logic".format(options.isdeleted, (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey = {}".format(options.target_is_timekey))
     if options.file_format == 'csv':
         trace(3, "File format options: format = '{}' delimiter = '{}'  line separator = '{}'".format(options.file_format, options.delimiter, options.line_separator))
@@ -676,6 +699,10 @@ def trace_input():
         trace(3, "Delay {} seconds before merging from the burst table after loading it".format(options.merge_delay))
     if options.insert_after_merge_dels_and_upds:
         trace(3, "For CDC MERGE only UPDATES & DELETES; use INSERT sql for INSERTS")
+    if options.target_names:
+        trace(3, "Target names configured:")
+        for key, val in options.target_names.items():
+            trace(3, "   {} = {}".format(key, val))
 
     if not options.recreate_tables_on_refresh:
         trace(3, "Preserve data during refresh = {}".format(not options.truncate_target_on_refresh))
@@ -1213,199 +1240,226 @@ def merge_action_with_config_action(actlist, config_actlist):
 
 ##### HVR 6 functions ############################################################
 
-def get_key_value(line):
-    key = value = ''
-    s1 = line.find('"')
-    if s1 >= 0:
-        s2 = line.find('"', s1+1)
-        if s1 >= 0 and s2 > s1:
-            key = line[s1+1:s2]
-            if line[s2+1] == ':':
-                value = line[s2+3:]
-                if value != "{" and value != "]":
-                    if value[-1] == ',':
-                        value = value[:-1]
-                    if value[0] == '"':
-                        value = value[1:-1]
-    else:
-        s1 = line.find('{')
-        if s1 >= 0:
-            value = line[s1:s1+1]
+def _exception_from_packed_args(exception_cls, args=None, kwargs=None):
+    if args is None:
+        args = ()
+    if kwargs is None:
+        kwargs = {}
+    return exception_cls(*args, **kwargs)
+
+class PyrlrError(Exception):
+    """
+    The base exception class for Pyrlr exceptions.
+    :ivar msg: The descriptive message associated with the error.
+    """
+
+    fmt = "An unspecified error occurred"
+
+    def __init__(self, **kwargs):
+        msg = self.fmt.format(**kwargs)
+        Exception.__init__(self, msg)
+        self.kwargs = kwargs
+
+        if self.kwargs.get("status_code"):
+            self.status_code = self.kwargs["status_code"]
+        if self.kwargs.get("message"):
+            message = self.kwargs["message"]
+            if message.startswith("F_"):
+                self.message = message[10:]
+                self.error_code = message[:8]
+            else:
+                self.message = message
+                self.error_code = None
+
+    # __reduce__ is for pickling
+    def __reduce__(self):
+        return _exception_from_packed_args, (self.__class__, None, self.kwargs)
+
+class RestError(PyrlrError):
+    """Raised for any error returned from a REST call.
+    :ivar status_code: HTTP status code
+    :ivar message: Error message returned in HTTP payload
+    """
+    fmt = "{status_code}: {message}"
+
+class LoginError(PyrlrError):
+    """Login failed.`
+    :ivar status_code: HTTP status code
+    :ivar message: Error message returned in HTTP payload
+    """
+    fmt = "{status_code}: {message}"
+
+class ConnectionError(PyrlrError):
+    """HTTP request failed to execute`
+    :ivar message: Text of the underlying rquests exception
+    """
+    fmt = "{message}"
+
+class Client:
+    username: str
+    password: str
+    uri: str
+    bearer_token: str = None
+    bearer_token_valid_until: int = 0
+
+    def __init__(self, uri=None, username=None, password=None):
+        self.username = username
+        self.password = password
+        self.uri = uri
+
+    def login(self):
+        self.login_token()
+        return None  # do not leak the token
+
+    def header_nonauth(self):
+        return {"Content-type": "application/json", "Accept": "application/json"}
+
+    def header_auth(self, bearer_token):
+        return {
+            "Content-type": "application/json",
+            "Accept": "application/json",
+            "Authorization": "bearer " + bearer_token,
+        }
+
+    def login_token(self):
+        # ToDo - use refresh token if possible
+        if self.bearer_token_valid_until < time.time():
+            try:
+                rq = requests.post(
+                    self.uri + "/auth/v1/password",
+                    data=json.dumps(
+                        {
+                            "username": self.username,
+                            "password": self.password,
+                            "refresh": "token",
+                        }
+                    ),
+                    headers=self.header_nonauth(),
+                )
+                if rq.ok:
+                    self.bearer_token = rq.json()["access_token"]
+                    # Force renew 60 seconds before expiry
+                    self.bearer_token_valid_until = time.time() + (
+                        rq.json()["expires_in"] - 60
+                    )
+                    return self.bearer_token
+
+            except Exception as e:
+                raise ConnectionError(
+                    message="Cannot login: " + str(e)
+                )
+
+            raise LoginError(
+                status_code=rq.status_code, message=rq.text
+            )
+
         else:
-            s1 = line.find('}')
-            if s1 >= 0:
-                value = line[s1:s1+1]
-    return key, value
+            return self.bearer_token
 
-def get_list(line):
-    retval = []
-    s1 = line.find('"')
-    while s1 >= 0 and s1 < len(line):
-        s2 = line.find('"', s1+1)
-        retval.append(line[s1+1:s2])
-        s1 = line.find('"', s2+1)
-    return retval
+    def get(self, path, query, headers, payload, is_json):
+        headers.update(self.header_auth(self.login_token()))
+        rq = requests.get(
+            self.uri + path,
+            params=query,
+            data=json.dumps(payload),
+            headers=headers,
+        )
 
-def temp_export_file_name():
-    hvr_config = os.getenv('HVR_CONFIG', '')
-    if not hvr_config:
-        raise Exception("$HVR_CONFIG must be defined")
-    tempname = "{0}_{1}_{2}.export.json".format(str(time.time()), options.hub, options.channel)
-    tempexpfile = os.path.join(hvr_config, "tmp")
-    tempexpfile = os.path.join(tempexpfile, tempname)
-    return tempexpfile
+        if rq.ok:
+            if rq.text and is_json:
+                return rq.json()
+            elif rq.text:
+                return rq.text
+            else:
+                return None
 
-def get_channel_export():
-    tempexpfile = temp_export_file_name()
-    cmd = []
-    cmd.append("hvrdefinitionexport")
-    cmd.append("-c{}".format(options.channel))
-    for opt in options.hvr_opts:
-        cmd.append(opt)
-    cmd.append(tempexpfile)
-    cmdstr = ''
-    for c in cmd:
-        cmdstr += c + ' '
-    trace(2, "Run Command: {}".format(cmdstr))
-    try:
-        rval = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
-        if options.trace >= 2 and len(rval):
-            print("return from run command: {}".format(rval))
-    except Exception as e:
-        print("Command failed: {}".format(cmdstr))
-        print("This may be due to 'Refresh token invalid or expired'")
-        print("Please run command as hvr user in the same location as the agent runs to see more information")
-        raise Exception("Error getting channel export: {}".format(e))
-    return tempexpfile
+        raise RestError(
+            status_code=rq.status_code, message=rq.text
+        )
 
-class Options:
-    NONE = 0
-    CHANNEL = 1
-    TABLE = 2
-    COLUMN = 3
+def get6_table(tablename):
+    ret = Connections.hvr6.get("/api/latest/hubs/{hub}/definition/channels/{channel}/tables/{table}".format(
+         hub=options.hub, channel=options.channel, table=tablename), {'fetch':'cols'}, {}, None, True)
+    return ret
 
-class ChannelInfo:
-    GENERAL = 0
-    TABLES = 1
-    COLUMN = 2
-    LOCATION_GROUPS = 3
-    ACTIONS = 4
+def get6_location_groups():
+    ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/loc_groups".format(
+         options.hub, options.channel), {'fetch':'members'}, {}, None, True)
+    groups = {}
+    for k,v in ret.items():
+        groups[k] = v['members']
+    return groups
+
+def get6_table_properties():
+    query = {'action_type':'TableProperties'}
+    ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/actions".format(
+         options.hub, options.channel), query, {}, None, True)
+    return ret
+
+def get6_column_properties():
+    query = {'action_type':'ColumnProperties'}
+    ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/actions".format(
+         options.hub, options.channel), query, {}, None, True)
+    return ret
 
 def hvr6_init_createtable_info():
     global g_table_props
     global g_column_props
 
+    grp_locations = get6_location_groups()
+    for grp,locs in grp_locations.items():
+        if options.location in locs:
+            if options.locgroup:
+                options.locgroup = '*'
+            else:
+                options.locgroup = grp
+
     g_table_props = []
-    g_column_props = []
-    channel = False
-    channelinfo = ChannelInfo.GENERAL
-    thisgroup = ''
-    grp_locations = {}
-    action = [options.channel, '', '', '', '', '', {}]
-
-    with open(options.channel_export, "r") as f:
-        for line in f:
-            key, value = get_key_value(line[:-1])
-            if not key:
-                if channelinfo == ChannelInfo.ACTIONS:
-                    if action[C_GRP] == options.location:
-                        action[C_LOC] = options.location
-                        action[C_GRP] = ''
-                    if options.location == action[C_LOC] or options.locgroup == '*' or options.locgroup == action[C_GRP]:
-                        if action[C_ACT] == 'TableProperties':
-                            g_table_props.append(action)
-                        if action[C_ACT] == 'ColumnProperties':
-                            g_column_props.append(action)
-                    action = [options.channel, '', '', '', '', '', {}]
-                continue;
-            if channel and channelinfo == ChannelInfo.LOCATION_GROUPS:
-                if not thisgroup:
-                    thisgroup = key
-                elif key == "members":
-                    grp_locations[thisgroup] = get_list(value)
-                    thisgroup = ''
-            if channel and key == "loc_groups":
-                channelinfo = ChannelInfo.LOCATION_GROUPS
-                thisgroup = ''
-            if channel and channelinfo == ChannelInfo.ACTIONS:
-                if key == "type":
-                    action[C_ACT] = value
-                elif key == "loc_scope":
-                    action[C_GRP] = value
-                elif key == "table_scope":
-                    action[C_TBL] = value
-                elif key != "params" and value:
-                    action[C_PRM][key] = value
-            if channel and key == "actions":
-                channelinfo = ChannelInfo.ACTIONS
-                inactions = True
-                for grp,locs in grp_locations.items():
-                    if options.location in locs:
-                        if options.locgroup:
-                            options.locgroup = '*'
-                        else:
-                            options.locgroup = grp
-            if key == "channel":
-                channel = (value == options.channel)
-
-    print("grplocs: {}".format(grp_locations))
-    
+    table_props = get6_table_properties()
+    for tp in table_props:
+        action = [options.channel, tp['loc_scope'], tp['table_scope'], '', tp['type'], '', tp['params']]
+        if options.location == action[C_LOC] or options.locgroup == '*' or options.locgroup == action[C_GRP]:
+            g_table_props.append(action)
     show_actions("TableProperties", g_table_props)
+
+    g_column_props = []
+    column_props = get6_column_properties()
+    for tp in column_props:
+        action = [options.channel, tp['loc_scope'], tp['table_scope'], '', tp['type'], '', tp['params']]
+        if options.location == action[C_LOC] or options.locgroup == '*' or options.locgroup == action[C_GRP]:
+            g_column_props.append(action)
     show_actions("ColumnProperties", g_column_props)
 
 def hvr6_get_table_info(tablename):
-    channel = False
-    channelinfo = ChannelInfo.GENERAL
-    thistable = 0
+    table_props = get6_table(tablename)
 
-    targetname = get_target_basename(tablename)
     target_columns = []
     column = []
-    with open(options.channel_export, "r") as f:
-        for line in f:
-            key, value = get_key_value(line[:-1])
-            if thistable:
-                if value == '{':
-                    thistable = thistable + 1
-                elif value == '}':
-                    thistable = thistable - 1
-            if channel and key == "tables":
-                channelinfo = ChannelInfo.TABLES
-            if channel and key == "actions":
-                channelinfo = ChannelInfo.ACTIONS
-                thistable = 0
-            if channel and thistable:
-                if not targetname and key == "base_name":
-                    targetname = value
-                if thistable == 2 and column:
-                    target_columns.append(column)
-                    column = []
-                if not key:
-                    continue
-                if thistable == 3:
-                    if not column:
-                        column = [key, key, '0', '', '0', '0']
-                    else:
-                        if key == "data_type":
-                            column[3] = value
-                        if key == "key":
-                            column[2] = value
-                if thistable == 4:
-                    if key == "bytelen":
-                        column[4] = value
-                    if key == "charlen":
+    for nam, props in table_props['cols'].items():
+        if column:
+            target_columns.append(column)
+        column = [nam, nam, '0', '', '0', '0']
+        for prop,value in props.items():
+            if prop == "data_type":
+                column[3] = value
+            if prop == "key":
+                column[2] = value
+            if prop == "attributes":
+                for akey,aval in value.items():
+                    if akey == "bytelen":
+                        column[4] = str(aval)
+                    if akey == "charlen":
                         charlen = column[4]
                         if charlen:
                             charlen += ','
-                        charlen += value
+                        charlen += str(aval)
                         column[4] = charlen
-                    if key == "nullable" and value == "true":
+                    if akey == "nullable" and aval == "true":
                         column[5] = '1'
-            if channel and channelinfo == ChannelInfo.TABLES and key == tablename:
-                thistable = 1
-            if key == "channel":
-                channel = (value == options.channel)
-    return targetname, target_columns
+    if column:
+        target_columns.append(column)
+
+    return target_columns
 
 #### Create table ###############################################################
 
@@ -1716,6 +1770,8 @@ def get_target_basename(table):
     return ''
 
 def get_target_tablename(table):
+    if table in options.target_names.keys():
+        return options.target_names[table]
     basename = get_target_basename(table)
     if basename:
         return basename
@@ -1773,34 +1829,38 @@ def initialize_hvr_connect():
             arg = arg[1:-1]
     for arg in args:
         trace(4, "  {}".format(arg))
-    a = 0
-    while True:
-         if a >= len(args) or not args[a].startswith('-'):
-             break
-         opt = args[a][1]
-         if not options.hvr_6 and opt != 'h' and opt != 'u':
-             print("Invalid option {} found as part of the Hub login options", args[a])
-             options.hvr_opts = []
-             return
-         if len(args[a]) == 2:
-             options.hvr_opts.append(args[a] + args[a+1])
-             a = a + 1
-         else:
-             options.hvr_opts.append(args[a])
-         a = a + 1
-    if a < len(args):
-        options.hvr_opts.append(args[a])
-    if options.hvr_6 and len(options.hvr_opts) != 2:
-        raise Exception("Expecting HVR connection in the form '-R<url> <hubname>'; found {}".format(options.hvr_opts))
     if not options.hvr_6:
+        a = 0
+        while True:
+             if a >= len(args) or not args[a].startswith('-'):
+                 break
+             opt = args[a][1]
+             if not options.hvr_6 and opt != 'h' and opt != 'u':
+                 print("Invalid option {} found as part of the Hub login options", args[a])
+                 options.hvr_opts = []
+                 return
+             if len(args[a]) == 2:
+                 options.hvr_opts.append(args[a] + args[a+1])
+                 a = a + 1
+             else:
+                 options.hvr_opts.append(args[a])
+             a = a + 1
+        if a < len(args):
+            options.hvr_opts.append(args[a])
         trace(4, "HVR connect using = {}".format(options.hvr_opts))
         hubname = get_hub_name()
         trace(2, "Connection to HVR valid, hubdb = {}".format(hubname))
-    else:
-        options.hub = options.hvr_opts[-1]
-        trace(2, "Connection to HVR valid, hubdb = {}".format(options.hvr_opts[-1]))
-        options.channel_export = get_channel_export()
-        trace(3, "Channel export: {}".format(options.channel_export))
+    if options.hvr_6:
+        if len(args) != 4:
+            raise Exception("Expecting HVR connection in the form '<uri> <hubname> <username> <password>'; found {}".format(options.hvr_opts))
+        uri = args[0]
+        user = args[2]
+        pwd = args[3]
+        if uri.startswith("-R"):
+            uri = uri[2:]
+        options.hub = args[1]
+        Connections.hvr6 = Client(uri=uri, username=user, password=pwd)
+        trace(2, "Connection to HVR valid, hubdb = {}".format(options.hub))
 
 ##### Main function ############################################################
 
@@ -1866,6 +1926,11 @@ def table_file_name_map():
 
     hvr_tbl_names = options.agent_env['HVR_TBL_NAMES'].split(":")
     hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
+    if options.target_names:
+        for idx, name in enumerate(hvr_tbl_names):
+            if name in options.target_names.keys() and idx < len(hvr_base_names):
+                trace(2, "Table '{}', basename '{}', target name '{}'".format(name, hvr_base_names[idx], options.target_names[name]))
+                hvr_base_names[idx] = options.target_names[name]
     hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
     hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
     files = options.agent_env.get('HVR_FILE_NAMES', [])
@@ -2262,6 +2327,26 @@ def execute_sql(sql_stmt, sql_name):
         print("Executing {0} SQL generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0])))
         raise
 
+def sql_succeeded(sql_stmt, sql_name, return_if_error_has):
+    trace(2, "Execute: {0}".format(sql_stmt))
+    try:
+        Connections.cursor.execute(sql_stmt)
+        Connections.cursor.commit()
+    except pyodbc.Error as ex:
+        if return_if_error_has in str(ex):
+            print("Source target row mismatch")
+            trace(3, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
+            return False
+        print("{0} SQL failed: {1}".format(sql_name, sql_stmt))
+        raise ex
+    except Exception as ex:
+        print("Executing {0} SQL raised: {1}".format(sql_name, type(ex)))
+        raise ex
+    except:
+        print("Executing {0} SQL generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0])))
+        raise
+    return True
+
 def set_database():
     set_sql = "USE {}".format(options.database)
     trace(1, set_sql)
@@ -2488,16 +2573,15 @@ def drop_target_table(target_table, table_type):
     if do_drop:
         drop_table(target_table)
 
-def recreate_target_table(hvr_table, table_type):
+def recreate_target_table(target_table, hvr_table, table_type):
     #  get the create table DDL - only drop when successful
     if options.hvr_6:
-        target_name, columns = hvr6_get_table_info(hvr_table)
+        columns = hvr6_get_table_info(hvr_table)
     else:
-        target_name = get_target_tablename(hvr_table)
         columns = target_columns(hvr_table)
-    drop_target_table(target_name, table_type)
-    create_sql = get_create_table_ddl(hvr_table, target_name, columns)
-    trace(1, "Creating table " + target_name)
+    drop_target_table(target_table, table_type)
+    create_sql = get_create_table_ddl(hvr_table, target_table, columns)
+    trace(1, "Creating table " + target_table)
     execute_sql(create_sql, 'Create')
 
 #
@@ -2575,6 +2659,78 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
         merge_sql += ")"
 
     trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
+    if sql_succeeded(merge_sql, 'Merge', 'multiple source rows matched'):
+        return
+
+    if options.no_isdeleted_on_target:
+        delete_sql = "DELETE FROM {} as tg WHERE EXISTS (SELECT ".format(target_table)
+        for key in keys:
+            delete_sql += key + ','
+        delete_sql = delete_sql[:-1]
+        delete_sql += " FROM {} WHERE ".format(burst_table)
+        for key in keys:
+            delete_sql += 'tg.'+ key + '=' + key + ' AND '
+        delete_sql += " {} = 0)".format(options.optype)
+        trace(1, "Delete rows from {} where {}.{} == 0".format(target_table, burst_table, options.optype))
+        execute_sql(delete_sql, 'Delete')
+    delete_sql = "DELETE FROM {} WHERE {} = 0".format(burst_table, options.optype)
+    trace(1, "Delete from {} where {} == 0".format(burst_table, options.optype))
+    execute_sql(delete_sql, 'Delete')
+    trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
+    execute_sql(merge_sql, 'Merge')
+
+def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
+    if options.merge_delay:
+        trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
+        time.sleep(options.merge_delay)
+
+    merge_keys = keys
+    for col in partition_cols:
+        if not col in merge_keys:
+            merge_keys.append(col)
+
+    merge_sql = "MERGE INTO {0} a USING (".format(target_table)
+    merge_sql += " SELECT "
+    for key in merge_keys:
+        merge_sql += " b.`{0}` as merge{0},".format(key)
+    merge_sql += " b.* FROM {} b".format(burst_table)
+    merge_sql += " WHERE b.{} = 1) m ".format(options.isdeleted)
+    merge_sql += " ON"
+    for key in merge_keys:
+        merge_sql += " a.`{0}` = merge{0} AND".format(key)
+    merge_sql = merge_sql[:-4]
+    merge_sql += " WHEN MATCHED THEN UPDATE SET"
+    for col in columns:
+        merge_sql += " a.`{0}` = m.`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    trace(1, "Merging deletes from {0} into {1}".format(burst_table, target_table))
+    execute_sql(merge_sql, 'Merge')
+
+    merge_sql = "MERGE INTO {0} a USING (".format(target_table)
+    merge_sql += " SELECT "
+    for key in merge_keys:
+        merge_sql += " b.`{0}` as merge{0},".format(key)
+    merge_sql += " b.* FROM {} b".format(burst_table)
+    merge_sql += " WHERE b.{} = 0) m ".format(options.isdeleted)
+    merge_sql += " ON"
+    for key in merge_keys:
+        merge_sql += " a.`{0}` = merge{0} AND".format(key)
+    merge_sql = merge_sql[:-4]
+    merge_sql += " WHEN MATCHED AND m.{} = 0 THEN UPDATE SET".format(options.isdeleted)
+    for col in columns:
+        merge_sql += " a.`{0}` = m.`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    merge_sql += " WHEN NOT MATCHED AND m.{} = 0 THEN INSERT".format(options.isdeleted)
+    merge_sql += "  ("
+    for col in columns:
+        merge_sql += "`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    merge_sql += ") VALUES ("
+    for col in columns:
+        merge_sql += "m.`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    merge_sql += ")"
+    trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
 def apply_inserts(burst_table, target_table, columns, partition_cols):
@@ -2609,9 +2765,12 @@ def apply_burst_table_changes_to_target(burst_table, target_table, columns, keyl
     if options.isdeleted in keys:
         keys.remove(options.isdeleted)
 
-    merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
-    if options.insert_after_merge_dels_and_upds:
-        apply_inserts(burst_table, target_table, target_cols, partition_cols)
+    if options.no_isdeleted_on_target:
+        merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
+        if options.insert_after_merge_dels_and_upds:
+            apply_inserts(burst_table, target_table, target_cols, partition_cols)
+    else:
+        merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
 
 def define_burst_table(stage_table, columns, col_types, burst_columns):
     stage_sql = ''
@@ -2673,7 +2832,7 @@ def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list):
             copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}', 'lineSep' = '{}') ".format(options.delimiter, options.line_separator)
         else:
             copy_sql += "FORMAT_OPTIONS('header' = 'true' , 'inferSchema' = 'true', 'delimiter' = '{}') ".format(options.delimiter)
-    copy_sql += "COPY_OPTIONS ('force' = 'false')"
+    copy_sql += "COPY_OPTIONS ('force' = 'true')"
 
     trace(1, "Copying from the file store into " + load_table)
     execute_sql(copy_sql, 'Copy')
@@ -2729,7 +2888,7 @@ def process_table(tab_entry, file_list, numrows):
                 options.set_tblproperties = ''
             if options.recreate_tables_on_refresh:
                 # pass the HVR table name - the repository will provide the base_name
-                recreate_target_table(tab_entry[1], table_type)
+                recreate_target_table(target_table, tab_entry[1], table_type)
             else:
                 if options.truncate_target_on_refresh:
                     if options.refresh_restrict:

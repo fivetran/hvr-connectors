@@ -306,3 +306,8 @@ not set table properties during refresh.
 | 1.44    | 01/21/22 | Strip leading & trailing spaces from HVRCONNECT after decode |
 | 1.45    | 01/21/22 | Fixed processing of DESCRIBE with column named 'name' |
 | 1.46    | 01/24/22 | Fixed error: 'Options' object has no attribute 'use_unmanaged_burst_table' |
+| 1.47    | 01/25/22 | Fixed MERGE failure if a key column is updated |
+| 1.48    | 02/02/22 | Fixed merge of key update, delete step with >1 key columns |
+| 1.49    | 02/02/22 | Support Softdelete |
+| 1.50    | 02/03/22 | Add environment variable for setting target table name |
+! 1.51    | 02/04/22 | Use REST Apis for HVR6 repository gets |
