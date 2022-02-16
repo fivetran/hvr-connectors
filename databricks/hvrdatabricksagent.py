@@ -292,6 +292,7 @@
 #     02/04/2022 RLR v1.51 Use REST APIs for HVR6 instead of commands
 #     02/11/2022 RLR v1.52 Fix SoftDelete - use 2 merge statements
 #     02/15/2022 RLR v1.53 Fixed logic that validates MANAGED state of table
+#     02/16/2022 RLR v1.54 If "-r" not set on refresh, use TRUNCATE not CREATE OR REPLACE
 #
 ################################################################################
 import sys
@@ -309,7 +310,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.53"
+VERSION = "1.54"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2335,7 +2336,6 @@ def sql_succeeded(sql_stmt, sql_name, return_if_error_has):
         Connections.cursor.commit()
     except pyodbc.Error as ex:
         if return_if_error_has in str(ex):
-            print("Source target row mismatch")
             trace(3, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
             return False
         print("{0} SQL failed: {1}".format(sql_name, sql_stmt))
@@ -2356,12 +2356,17 @@ def set_database():
 def delete_rows_from_target(table_name, where_clause):
     trunc_sql = "DELETE FROM {0} WHERE {1}".format(table_name, where_clause)
     trace(1, "Deleteing from {0} WHERE {1}".format(table_name, where_clause))
-    execute_sql(trunc_sql, 'Delete')
+    return sql_succeeded(trunc_sql, 'Delete', 'Table or view not found')
 
 def drop_table(table_name):
     drop_sql = "DROP TABLE IF EXISTS {0}".format(table_name)
     trace(1, "Dropping table " + table_name)
     execute_sql(drop_sql, 'Drop')
+
+def truncate_table(table_name):
+    truncate_sql = "TRUNCATE TABLE {0}".format(table_name)
+    trace(1, "Truncating table " + table_name)
+    return sql_succeeded(truncate_sql, 'Truncate', 'Table not found')
 
 def replace_target_table(target_table, columns, col_types, partition_cols):
     create_sql = "CREATE OR REPLACE TABLE {0} ".format(target_table)
@@ -2665,6 +2670,7 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
     if sql_succeeded(merge_sql, 'Merge', 'multiple source rows matched'):
         return
 
+    trace(1, "Source target row mismatch; possible key column change; do deletes, then merge insert/updates")
     if options.no_isdeleted_on_target:
         delete_sql = "DELETE FROM {} as tg WHERE EXISTS (SELECT ".format(target_table)
         for key in keys:
@@ -2895,9 +2901,11 @@ def process_table(tab_entry, file_list, numrows):
             else:
                 if options.truncate_target_on_refresh:
                     if options.refresh_restrict:
-                        delete_rows_from_target(target_table, options.refresh_restrict)
+                        if not delete_rows_from_target(target_table, options.refresh_restrict):
+                            raise Exception("Target table does not exist; cannot continue refresh")
                     else:
-                        replace_target_table(target_table, columns, col_types, partition_cols)
+                        if not truncate_table(target_table):
+                            raise Exception("Target table does not exist; cannot continue refresh")
 
     if not file_list:
         return

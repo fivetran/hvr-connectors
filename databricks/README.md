@@ -311,3 +311,6 @@ not set table properties during refresh.
 | 1.49    | 02/02/22 | Support Softdelete |
 | 1.50    | 02/03/22 | Add environment variable for setting target table name |
 ! 1.51    | 02/04/22 | Use REST Apis for HVR6 repository gets |
+! 1.52    | 02/11/22 | Fix SoftDelete - use 2 merge statements |
+! 1.53    | 02/15/22 | Fixed logic that validates MANAGED state of table |
+! 1.54    | 02/16/22 | If '-r' not set on refresh, use TRUNCATE not CREATE OR REPLACE |
