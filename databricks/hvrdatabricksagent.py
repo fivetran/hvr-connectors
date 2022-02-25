@@ -293,6 +293,7 @@
 #     02/11/2022 RLR v1.52 Fix SoftDelete - use 2 merge statements
 #     02/15/2022 RLR v1.53 Fixed logic that validates MANAGED state of table
 #     02/16/2022 RLR v1.54 If "-r" not set on refresh, use TRUNCATE not CREATE OR REPLACE
+#     02/25/2022 RLR v1.55 Fixed a bug: sliced refresh, "-r" not set; target table truncated each slice
 #
 ################################################################################
 import sys
@@ -310,7 +311,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.54"
+VERSION = "1.55"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2894,6 +2895,7 @@ def process_table(tab_entry, file_list, numrows):
             if refresh_options.job_name and refresh_options.slices_done > 1:
                 trace(1, "First slice has already refreshed, disabling create/truncate target table")
                 options.recreate_tables_on_refresh = False
+                options.truncate_target_on_refresh = False
                 options.set_tblproperties = ''
             if options.recreate_tables_on_refresh:
                 # pass the HVR table name - the repository will provide the base_name
