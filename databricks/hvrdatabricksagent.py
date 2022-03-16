@@ -294,6 +294,7 @@
 #     02/15/2022 RLR v1.53 Fixed logic that validates MANAGED state of table
 #     02/16/2022 RLR v1.54 If "-r" not set on refresh, use TRUNCATE not CREATE OR REPLACE
 #     02/25/2022 RLR v1.55 Fixed a bug: sliced refresh, "-r" not set; target table truncated each slice
+#     03/16/2022 RLR v1.56 Do not use derived partition columns
 #
 ################################################################################
 import sys
@@ -311,7 +312,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.55"
+VERSION = "1.56"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2498,7 +2499,7 @@ def describe_table(table_name, columns, burst_columns):
             if add_partitions:
                 if col[0] == "Not partitioned":
                     add_partitions = False
-                elif col[1]:
+                elif col[1] and col[1].lower() in col_list:
                     part_cols.append(col[1])
                 continue
             if table_details and col[0] == "Location":
