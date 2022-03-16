@@ -295,6 +295,7 @@
 #     02/16/2022 RLR v1.54 If "-r" not set on refresh, use TRUNCATE not CREATE OR REPLACE
 #     02/25/2022 RLR v1.55 Fixed a bug: sliced refresh, "-r" not set; target table truncated each slice
 #     03/16/2022 RLR v1.56 Do not use derived partition columns
+#     03/16/2022 RLR v1.57 Cast the burst columns in the COPY INTO SQL
 #
 ################################################################################
 import sys
@@ -312,7 +313,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.56"
+VERSION = "1.57"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2824,7 +2825,7 @@ def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list):
         else:
             copy_sql += "`{0}`,".format(col)
     for col in burst_columns:
-        copy_sql += "`{0}`,".format(col)
+        copy_sql += "int(`{0}`),".format(col)
     copy_sql = copy_sql[:-1]
     if options.filestore == FileStore.AZURE_BLOB or (options.filestore == FileStore.ADLS_G2 and options.use_wasb):
         copy_sql += " FROM 'wasbs://{0}@{1}.blob.core.windows.net/') ".format(options.container, options.resource)

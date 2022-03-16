@@ -316,3 +316,4 @@ not set table properties during refresh.
 | 1.54    | 02/16/22 | If '-r' not set on refresh, use TRUNCATE not CREATE OR REPLACE |
 | 1.55    | 02/25/22 | Fixed a bug: sliced refresh, "-r" not set; target table truncated each slice |
 | 1.56    | 03/16/22 | Do not use derived partition columns |
+| 1.57    | 03/16/22 | Cast the burst columns in the COPY INTO SQL |
