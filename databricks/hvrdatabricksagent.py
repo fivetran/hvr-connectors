@@ -296,6 +296,8 @@
 #     02/25/2022 RLR v1.55 Fixed a bug: sliced refresh, "-r" not set; target table truncated each slice
 #     03/16/2022 RLR v1.56 Do not use derived partition columns
 #     03/16/2022 RLR v1.57 Cast the burst columns in the COPY INTO SQL
+#     03/16/2022 RLR v1.58 Do not fail if a table is removed from the channel
+#                          Fixed bug, error thrown if target table not exist but burst does
 #
 ################################################################################
 import sys
@@ -313,7 +315,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.57"
+VERSION = "1.58"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1929,15 +1931,21 @@ def table_file_name_map():
     global file_counter
     # build search map
 
-    hvr_tbl_names = options.agent_env['HVR_TBL_NAMES'].split(":")
-    hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
-    if options.target_names:
-        for idx, name in enumerate(hvr_tbl_names):
-            if name in options.target_names.keys() and idx < len(hvr_base_names):
-                trace(2, "Table '{}', basename '{}', target name '{}'".format(name, hvr_base_names[idx], options.target_names[name]))
-                hvr_base_names[idx] = options.target_names[name]
-    hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
-    hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
+    if options.agent_env['HVR_TBL_NAMES']:
+        hvr_tbl_names = options.agent_env['HVR_TBL_NAMES'].split(":")
+        hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
+        if options.target_names:
+            for idx, name in enumerate(hvr_tbl_names):
+                if name in options.target_names.keys() and idx < len(hvr_base_names):
+                    trace(2, "Table '{}', basename '{}', target name '{}'".format(name, hvr_base_names[idx], options.target_names[name]))
+                    hvr_base_names[idx] = options.target_names[name]
+        hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
+        hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
+    else:
+        hvr_tbl_names = []
+        hvr_base_names = []
+        hvr_col_names = []
+        hvr_tbl_keys = []
     files = options.agent_env.get('HVR_FILE_NAMES', [])
     rows = options.agent_env.get('HVR_FILE_NROWS', [])
 
@@ -1974,8 +1982,11 @@ def table_file_name_map():
     if options.parallel_count:
         file_counter = total_files
 
-    if files:  
-        raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
+    trace(4, "HVR_BASE_NAMES={}, number of names= {}, leftover files={}".format(options.agent_env['HVR_BASE_NAMES'], len(hvr_base_names), files))
+    if hvr_base_names and files:  
+        if not total_files:
+            raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
+        trace(1, "Files not associated with a table in $HVR_TBL_NAMES {}; cleanup at end {}".format(options.agent_env['HVR_TBL_NAMES'], files))
 
     return tbl_map, num_rows
 
@@ -2921,7 +2932,10 @@ def process_table(tab_entry, file_list, numrows):
         # Use the existing burst table if it matches
         # If using managed burst, always CREATE OR REPLACE to create or truncate the table
         # If using existing and using unmanaged burst, skip burst table creation
-        use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
+        if not target_cols:
+            use_existing_burst = False
+        else:
+            use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
         if not use_existing_burst:
             drop_table(load_table)
         if not options.use_unmanaged_burst_table:
