@@ -298,6 +298,8 @@
 #     03/16/2022 RLR v1.57 Cast the burst columns in the COPY INTO SQL
 #     03/16/2022 RLR v1.58 Do not fail if a table is removed from the channel
 #                          Fixed bug, error thrown if target table not exist but burst does
+#     03/22/2022 RLR v1.59 Disable unmanaged burst
+#     03/25/2022 RLR v1.60 Fixed parsing of HVR_FILE_LOC when auth uses InstanceProfile
 #
 ################################################################################
 import sys
@@ -315,7 +317,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.58"
+VERSION = "1.60"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -524,16 +526,17 @@ def env_load():
         options.filestore_ops = ALL_FILEOPS
     elif fileops:
         raise Exception("Invalid file operation '{}' defined in HVR_DBRK_FILESTORE_OPS; valid values are 'check','delete','none','+cleanup'".format(fileops))
-    unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
-    if unmanaged_burst:
-        if unmanaged_burst.upper() == 'ON':
-            if (options.filestore_ops & FileOps.CHECK) == 0:
-                print("Check is disabled in HVR_DBRK_FILESTORE_OPS; cannot enable HVR_DBRK_UNMANAGED_BURST")
-                options.unmanaged_burst = 'Off'
-            else:
-                options.unmanaged_burst = 'On'
-        else:
-            options.unmanaged_burst = 'Off'
+    ### Disable this logic - it will not be in the native and I am not sure it helps
+    # unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
+    # if unmanaged_burst:
+    #     if unmanaged_burst.upper() == 'ON':
+    #         if (options.filestore_ops & FileOps.CHECK) == 0:
+    #             print("Check is disabled in HVR_DBRK_FILESTORE_OPS; cannot enable HVR_DBRK_UNMANAGED_BURST")
+    #             options.unmanaged_burst = 'Off'
+    #         else:
+    #             options.unmanaged_burst = 'On'
+    #     else:
+    #         options.unmanaged_burst = 'Off'
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
@@ -609,26 +612,34 @@ def env_load():
         if file_loc[:6] == 'wasbs:':
             options.filestore = FileStore.AZURE_BLOB
             options.url = file_loc
-        if file_loc[:6] == 'abfss:':
+        elif file_loc[:6] == 'abfss:':
             options.filestore = FileStore.ADLS_G2
             options.url = file_loc
-        ind = file_loc.find("@")
-        if ind > 0:
-            if options.filestore == FileStore.AWS_BUCKET:
-                options.container = file_loc[ind+1:]
-                if options.container[-1:] == "/":
-                    options.container = options.container[:-1]
-                if "/" in options.container:
-                    options.directory = options.container[options.container.find("/")+1:]
-                    options.container = options.container[:options.container.find("/")]
+        elif file_loc[:4] == 's3s:':
+            options.filestore = FileStore.AWS_BUCKET
+        else:
+            raise Exception("Cannot identify cloud store from file location {}".format(file_loc))
+        atsign = file_loc.find("@")
+        if options.filestore == FileStore.AWS_BUCKET:
+            if atsign > 0:
+                options.container = file_loc[atsign+1:]
             else:
-                options.container = file_loc[8:ind]
-                options.resource = file_loc[ind+1:]
-                if options.resource[-1:] == "/":
-                    options.resource = options.resource[:-1]
-                if "/" in options.resource:
-                    options.directory = options.resource[options.resource.find("/")+1:]
-                    options.resource = options.resource[:options.resource.find("/")]
+                options.container = file_loc[6:]
+            if options.container[-1:] == "/":
+                options.container = options.container[:-1]
+            if "/" in options.container:
+                options.directory = options.container[options.container.find("/")+1:]
+                options.container = options.container[:options.container.find("/")]
+        else:
+            if atsign <= 0:
+                raise Exception("Unknown cloud path designation {}; cannot continue".format(file_loc))
+            options.container = file_loc[8:atsign]
+            options.resource = file_loc[atsign+1:]
+            if options.resource[-1:] == "/":
+                options.resource = options.resource[:-1]
+            if "/" in options.resource:
+                options.directory = options.resource[options.resource.find("/")+1:]
+                options.resource = options.resource[:options.resource.find("/")]
    
     if options.filestore_ops & FileOps.CLEANUP:
         if options.filestore == FileStore.AWS_BUCKET:

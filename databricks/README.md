@@ -73,7 +73,6 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
 | HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
-| HVR_DBRK_UNMANAGED_BURST   |     No    | Create the burst table unmanaged ('ON'), or managed ('OFF') |
 
 ## UserArgument options
 The following options may be set in the /UserArguments of the AgentPlugin action for hvrdatabricksagent.py
@@ -165,19 +164,7 @@ If set to 'none' the connector will not check that the files exist, nor will it 
 If set to '+cleanup' the connector will delete any files it finds in the folder during the 'check' phase that are not part of this integrate cycle.  Note that to enable '+cleanup', HVR_DBRK_FILE_EXPR must be set to the value of Integrate /RenameExpression and the pathname specified by HVR_DBRK_FILE_EXPR must include {hvr_tbl_name} as an element in a folder, not just the file name.
 
 ## Burst table
-The script creates the burst table as a managed table and then uses COPY INTO to load the burst table.  The connector can also be configured to create the burst table as an unmanaged table.  That is, the create table defines metadata but the data are the files uploaded by Integrate. When the burst table is created as an unmanaged table, the script skips the COPY INTO sql to load the burst table.
-
-To create the burst table as an unmanaged table, the script must be able to point to a location that has only those 
-files written by integrate in this cycle for this table.  The script checks this by 1) checking if the table name is 
-in the path, and 2) checking that the files in that location are only the ones that it expects to find there.   If 
-these conditions hold, the connector can create the burst table as an unmanaged table.  If not it will create the 
-burst table and load it.
-
-By default, the script will create the burst table as an unmanaged table if it can (that is, if the above conditions hold), otherwise the script will create the burst table as a managed table.
-
-An Environment action, HVR_DBRK_UNMANAGED_BURST, can be used to force this logic one way or the other.  However, if 
-HVR_DBRK_UNMANAGED_BURST=ON, and there are more files in the location than in the integrate cycle for the table, the 
-script will revert to the managed table logic.
+The script creates the burst table as a managed table and then uses COPY INTO to load the burst table.
 
 ## Target is a replication copy
 To maintain a replication copy, the connector requires that the following ColumnProperties actions are defined. Note 
@@ -317,3 +304,6 @@ not set table properties during refresh.
 | 1.55    | 02/25/22 | Fixed a bug: sliced refresh, "-r" not set; target table truncated each slice |
 | 1.56    | 03/16/22 | Do not use derived partition columns |
 | 1.57    | 03/16/22 | Cast the burst columns in the COPY INTO SQL |
+| 1.58    | 03/16/22 | Do not fail if a table is removed from the channel |
+| 1.59    | 03/22/22 | Disable unmanaged burst |
+| 1.60    | 03/22/22 | Fixed parsing of HVR_FILE_LOC when auth uses InstanceProfile |
