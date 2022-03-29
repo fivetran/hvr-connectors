@@ -291,6 +291,15 @@
 #     02/03/2022 RLR v1.50 Add environment variable for setting target table name
 #     02/04/2022 RLR v1.51 Use REST APIs for HVR6 instead of commands
 #     02/11/2022 RLR v1.52 Fix SoftDelete - use 2 merge statements
+#     02/15/2022 RLR v1.53 Fixed logic that validates MANAGED state of table
+#     02/16/2022 RLR v1.54 If "-r" not set on refresh, use TRUNCATE not CREATE OR REPLACE
+#     02/25/2022 RLR v1.55 Fixed a bug: sliced refresh, "-r" not set; target table truncated each slice
+#     03/16/2022 RLR v1.56 Do not use derived partition columns
+#     03/16/2022 RLR v1.57 Cast the burst columns in the COPY INTO SQL
+#     03/16/2022 RLR v1.58 Do not fail if a table is removed from the channel
+#                          Fixed bug, error thrown if target table not exist but burst does
+#     03/22/2022 RLR v1.59 Disable unmanaged burst
+#     03/25/2022 RLR v1.60 Fixed parsing of HVR_FILE_LOC when auth uses InstanceProfile
 #
 ################################################################################
 import sys
@@ -308,7 +317,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.52"
+VERSION = "1.60"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -517,16 +526,17 @@ def env_load():
         options.filestore_ops = ALL_FILEOPS
     elif fileops:
         raise Exception("Invalid file operation '{}' defined in HVR_DBRK_FILESTORE_OPS; valid values are 'check','delete','none','+cleanup'".format(fileops))
-    unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
-    if unmanaged_burst:
-        if unmanaged_burst.upper() == 'ON':
-            if (options.filestore_ops & FileOps.CHECK) == 0:
-                print("Check is disabled in HVR_DBRK_FILESTORE_OPS; cannot enable HVR_DBRK_UNMANAGED_BURST")
-                options.unmanaged_burst = 'Off'
-            else:
-                options.unmanaged_burst = 'On'
-        else:
-            options.unmanaged_burst = 'Off'
+    ### Disable this logic - it will not be in the native and I am not sure it helps
+    # unmanaged_burst = os.getenv('HVR_DBRK_UNMANAGED_BURST', '')
+    # if unmanaged_burst:
+    #     if unmanaged_burst.upper() == 'ON':
+    #         if (options.filestore_ops & FileOps.CHECK) == 0:
+    #             print("Check is disabled in HVR_DBRK_FILESTORE_OPS; cannot enable HVR_DBRK_UNMANAGED_BURST")
+    #             options.unmanaged_burst = 'Off'
+    #         else:
+    #             options.unmanaged_burst = 'On'
+    #     else:
+    #         options.unmanaged_burst = 'Off'
     options.access_id = os.getenv('HVR_DBRK_FILESTORE_ID', '')
     options.secret_key = os.getenv('HVR_DBRK_FILESTORE_KEY', '')
     options.region = os.getenv('HVR_DBRK_FILESTORE_REGION', '')
@@ -602,26 +612,34 @@ def env_load():
         if file_loc[:6] == 'wasbs:':
             options.filestore = FileStore.AZURE_BLOB
             options.url = file_loc
-        if file_loc[:6] == 'abfss:':
+        elif file_loc[:6] == 'abfss:':
             options.filestore = FileStore.ADLS_G2
             options.url = file_loc
-        ind = file_loc.find("@")
-        if ind > 0:
-            if options.filestore == FileStore.AWS_BUCKET:
-                options.container = file_loc[ind+1:]
-                if options.container[-1:] == "/":
-                    options.container = options.container[:-1]
-                if "/" in options.container:
-                    options.directory = options.container[options.container.find("/")+1:]
-                    options.container = options.container[:options.container.find("/")]
+        elif file_loc[:4] == 's3s:':
+            options.filestore = FileStore.AWS_BUCKET
+        else:
+            raise Exception("Cannot identify cloud store from file location {}".format(file_loc))
+        atsign = file_loc.find("@")
+        if options.filestore == FileStore.AWS_BUCKET:
+            if atsign > 0:
+                options.container = file_loc[atsign+1:]
             else:
-                options.container = file_loc[8:ind]
-                options.resource = file_loc[ind+1:]
-                if options.resource[-1:] == "/":
-                    options.resource = options.resource[:-1]
-                if "/" in options.resource:
-                    options.directory = options.resource[options.resource.find("/")+1:]
-                    options.resource = options.resource[:options.resource.find("/")]
+                options.container = file_loc[6:]
+            if options.container[-1:] == "/":
+                options.container = options.container[:-1]
+            if "/" in options.container:
+                options.directory = options.container[options.container.find("/")+1:]
+                options.container = options.container[:options.container.find("/")]
+        else:
+            if atsign <= 0:
+                raise Exception("Unknown cloud path designation {}; cannot continue".format(file_loc))
+            options.container = file_loc[8:atsign]
+            options.resource = file_loc[atsign+1:]
+            if options.resource[-1:] == "/":
+                options.resource = options.resource[:-1]
+            if "/" in options.resource:
+                options.directory = options.resource[options.resource.find("/")+1:]
+                options.resource = options.resource[:options.resource.find("/")]
    
     if options.filestore_ops & FileOps.CLEANUP:
         if options.filestore == FileStore.AWS_BUCKET:
@@ -1924,15 +1942,21 @@ def table_file_name_map():
     global file_counter
     # build search map
 
-    hvr_tbl_names = options.agent_env['HVR_TBL_NAMES'].split(":")
-    hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
-    if options.target_names:
-        for idx, name in enumerate(hvr_tbl_names):
-            if name in options.target_names.keys() and idx < len(hvr_base_names):
-                trace(2, "Table '{}', basename '{}', target name '{}'".format(name, hvr_base_names[idx], options.target_names[name]))
-                hvr_base_names[idx] = options.target_names[name]
-    hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
-    hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
+    if options.agent_env['HVR_TBL_NAMES']:
+        hvr_tbl_names = options.agent_env['HVR_TBL_NAMES'].split(":")
+        hvr_base_names = options.agent_env['HVR_BASE_NAMES'].split(":")
+        if options.target_names:
+            for idx, name in enumerate(hvr_tbl_names):
+                if name in options.target_names.keys() and idx < len(hvr_base_names):
+                    trace(2, "Table '{}', basename '{}', target name '{}'".format(name, hvr_base_names[idx], options.target_names[name]))
+                    hvr_base_names[idx] = options.target_names[name]
+        hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
+        hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
+    else:
+        hvr_tbl_names = []
+        hvr_base_names = []
+        hvr_col_names = []
+        hvr_tbl_keys = []
     files = options.agent_env.get('HVR_FILE_NAMES', [])
     rows = options.agent_env.get('HVR_FILE_NROWS', [])
 
@@ -1969,8 +1993,11 @@ def table_file_name_map():
     if options.parallel_count:
         file_counter = total_files
 
-    if files:  
-        raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
+    trace(4, "HVR_BASE_NAMES={}, number of names= {}, leftover files={}".format(options.agent_env['HVR_BASE_NAMES'], len(hvr_base_names), files))
+    if hvr_base_names and files:  
+        if not total_files:
+            raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")
+        trace(1, "Files not associated with a table in $HVR_TBL_NAMES {}; cleanup at end {}".format(options.agent_env['HVR_TBL_NAMES'], files))
 
     return tbl_map, num_rows
 
@@ -2334,7 +2361,6 @@ def sql_succeeded(sql_stmt, sql_name, return_if_error_has):
         Connections.cursor.commit()
     except pyodbc.Error as ex:
         if return_if_error_has in str(ex):
-            print("Source target row mismatch")
             trace(3, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
             return False
         print("{0} SQL failed: {1}".format(sql_name, sql_stmt))
@@ -2355,12 +2381,17 @@ def set_database():
 def delete_rows_from_target(table_name, where_clause):
     trunc_sql = "DELETE FROM {0} WHERE {1}".format(table_name, where_clause)
     trace(1, "Deleteing from {0} WHERE {1}".format(table_name, where_clause))
-    execute_sql(trunc_sql, 'Delete')
+    return sql_succeeded(trunc_sql, 'Delete', 'Table or view not found')
 
 def drop_table(table_name):
     drop_sql = "DROP TABLE IF EXISTS {0}".format(table_name)
     trace(1, "Dropping table " + table_name)
     execute_sql(drop_sql, 'Drop')
+
+def truncate_table(table_name):
+    truncate_sql = "TRUNCATE TABLE {0}".format(table_name)
+    trace(1, "Truncating table " + table_name)
+    return sql_succeeded(truncate_sql, 'Truncate', 'Table not found')
 
 def replace_target_table(target_table, columns, col_types, partition_cols):
     create_sql = "CREATE OR REPLACE TABLE {0} ".format(target_table)
@@ -2491,7 +2522,7 @@ def describe_table(table_name, columns, burst_columns):
             if add_partitions:
                 if col[0] == "Not partitioned":
                     add_partitions = False
-                elif col[1]:
+                elif col[1] and col[1].lower() in col_list:
                     part_cols.append(col[1])
                 continue
             if table_details and col[0] == "Location":
@@ -2555,23 +2586,25 @@ def get_create_table_ddl(hvr_table, target_name, columns):
     show_columns(columns)
     return target_create_table(hvr_table, target_name, columns)
 
-def drop_target_table(target_table, table_type):
-    trace(1, "Check if need to drop target table")
+def locations_are_the_same(existing, configured):
+    trace(3, "Compare '{}' to '{}'".format(existing, configured))
+    if existing.startswith('dbfs:') and configured.startswith('/'):
+        existing = existing[5:]
+    return existing == configured
+
+def check_target_table(target_table, table_type):
+    trace(1, "Check if existing table 'MANAGED' status is same as configured")
     trace(2, "Target name: {}; existing type: {}; configured: {}".format(target_table, table_type, options.external_loc))
-    do_drop = False
     if table_type:
         if options.external_loc:
             if table_type[0] != "EXTERNAL":
-                do_drop = True
+                trace(1, "Warning: external location configured; existing table is not external")
             else:
-                external_loc = get_external_loc(target_table)
-                if table_type[1][5:] != external_loc:
-                    do_drop = True
+                if not locations_are_the_same(table_type[1], get_external_loc(target_table)):
+                    trace(1, "Configured external location '{}' does not match existing location '{}'".format(options.external_loc, table_type[1]))
         else:
-            if table_type == "EXTERNAL":
-                do_drop = True
-    if do_drop:
-        drop_table(target_table)
+            if table_type[0] == "EXTERNAL":
+                trace(1, "Warning: external location is not configured; existing table is external")
 
 def recreate_target_table(target_table, hvr_table, table_type):
     #  get the create table DDL - only drop when successful
@@ -2579,7 +2612,7 @@ def recreate_target_table(target_table, hvr_table, table_type):
         columns = hvr6_get_table_info(hvr_table)
     else:
         columns = target_columns(hvr_table)
-    drop_target_table(target_table, table_type)
+    check_target_table(target_table, table_type)
     create_sql = get_create_table_ddl(hvr_table, target_table, columns)
     trace(1, "Creating table " + target_table)
     execute_sql(create_sql, 'Create')
@@ -2662,6 +2695,7 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
     if sql_succeeded(merge_sql, 'Merge', 'multiple source rows matched'):
         return
 
+    trace(1, "Source target row mismatch; possible key column change; do deletes, then merge insert/updates")
     if options.no_isdeleted_on_target:
         delete_sql = "DELETE FROM {} as tg WHERE EXISTS (SELECT ".format(target_table)
         for key in keys:
@@ -2813,7 +2847,7 @@ def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list):
         else:
             copy_sql += "`{0}`,".format(col)
     for col in burst_columns:
-        copy_sql += "`{0}`,".format(col)
+        copy_sql += "int(`{0}`),".format(col)
     copy_sql = copy_sql[:-1]
     if options.filestore == FileStore.AZURE_BLOB or (options.filestore == FileStore.ADLS_G2 and options.use_wasb):
         copy_sql += " FROM 'wasbs://{0}@{1}.blob.core.windows.net/') ".format(options.container, options.resource)
@@ -2885,6 +2919,7 @@ def process_table(tab_entry, file_list, numrows):
             if refresh_options.job_name and refresh_options.slices_done > 1:
                 trace(1, "First slice has already refreshed, disabling create/truncate target table")
                 options.recreate_tables_on_refresh = False
+                options.truncate_target_on_refresh = False
                 options.set_tblproperties = ''
             if options.recreate_tables_on_refresh:
                 # pass the HVR table name - the repository will provide the base_name
@@ -2892,9 +2927,11 @@ def process_table(tab_entry, file_list, numrows):
             else:
                 if options.truncate_target_on_refresh:
                     if options.refresh_restrict:
-                        delete_rows_from_target(target_table, options.refresh_restrict)
+                        if not delete_rows_from_target(target_table, options.refresh_restrict):
+                            raise Exception("Target table does not exist; cannot continue refresh")
                     else:
-                        replace_target_table(target_table, columns, col_types, partition_cols)
+                        if not truncate_table(target_table):
+                            raise Exception("Target table does not exist; cannot continue refresh")
 
     if not file_list:
         return
@@ -2906,7 +2943,10 @@ def process_table(tab_entry, file_list, numrows):
         # Use the existing burst table if it matches
         # If using managed burst, always CREATE OR REPLACE to create or truncate the table
         # If using existing and using unmanaged burst, skip burst table creation
-        use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
+        if not target_cols:
+            use_existing_burst = False
+        else:
+            use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
         if not use_existing_burst:
             drop_table(load_table)
         if not options.use_unmanaged_burst_table:
