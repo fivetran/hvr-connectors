@@ -30,6 +30,7 @@
 #     -p - preserve target data during timekey refresh
 #     -r - create (re-create) tables during refresh    
 #     -t - target is timekey
+#     -x - if HVR6, bypass SSL certificate verification
 #     -w - use wasb syntax for files in adls file system
 #
 # ENVIRONMENT VARIABLES
@@ -305,6 +306,7 @@
 #     03/22/2022 RLR v1.59 Disable unmanaged burst
 #     03/25/2022 RLR v1.60 Fixed parsing of HVR_FILE_LOC when auth uses InstanceProfile
 #     04/05/2022 RLR v1.61 Add partial support for DDL (ADD column only)
+#                          On HVR6 hub connection, make SSL verification optional
 #
 ################################################################################
 import sys
@@ -404,6 +406,7 @@ class Options:
     partition_columns = {}
     parallel_count = 0
     adapt_add_cols = False
+    verify_ssl = True
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -703,6 +706,8 @@ def trace_input():
     if options.file_pattern:
         trace(3, "File name elements: ({}) {}".format(options.tblname_in_file_pattern, options.file_pattern))
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
+    if not options.verify_ssl:
+        trace(3, "If HVR6, when connecting to the hub, skip SSL cert verification")
     if options.adapt_add_cols:
         trace(3, "If a column exists in HVR and not in the target table, add it to the target")
     if options.recreate_tables_on_refresh and options.context:
@@ -784,7 +789,7 @@ def process_args(argv):
     if len(cmdargs):
         try:
             list_args = cmdargs.split(" ");
-            opts, args = getopt.getopt(list_args,"c:d:D:E:i:lno:O:prtwy")
+            opts, args = getopt.getopt(list_args,"c:d:D:E:i:lno:O:prtwxy")
         except getopt.GetoptError:
             raise Exception("Error parsing command line arguments '" + cmdargs + "' due to invalid argument or invalid syntax")
     
@@ -823,6 +828,8 @@ def process_args(argv):
                 options.target_is_timekey = True
             elif opt == '-w':
                 options.use_wasb = True
+            elif opt == '-x':
+                options.verify_ssl = False
             elif opt == '-y':
                 options.filestore_ops = 0
 
@@ -1329,11 +1336,13 @@ class Client:
     uri: str
     bearer_token: str = None
     bearer_token_valid_until: int = 0
+    verify_ssl: bool = True
 
-    def __init__(self, uri=None, username=None, password=None):
+    def __init__(self, uri=None, username=None, password=None, verify_ssl=True):
         self.username = username
         self.password = password
         self.uri = uri
+        self.verify_ssl = verify_ssl
 
     def login(self):
         self.login_token()
@@ -1363,6 +1372,7 @@ class Client:
                         }
                     ),
                     headers=self.header_nonauth(),
+                    verify=self.verify_ssl
                 )
                 if rq.ok:
                     self.bearer_token = rq.json()["access_token"]
@@ -1391,6 +1401,7 @@ class Client:
             params=query,
             data=json.dumps(payload),
             headers=headers,
+            verify=self.verify_ssl
         )
 
         if rq.ok:
@@ -1889,7 +1900,7 @@ def initialize_hvr_connect():
         if uri.startswith("-R"):
             uri = uri[2:]
         options.hub = args[1]
-        Connections.hvr6 = Client(uri=uri, username=user, password=pwd)
+        Connections.hvr6 = Client(uri=uri, username=user, password=pwd, verify_ssl=options.verify_ssl)
         trace(2, "Connection to HVR valid, hubdb = {}".format(options.hub))
 
 ##### Main function ############################################################
