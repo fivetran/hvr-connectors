@@ -58,6 +58,10 @@
 #        This  variable contains list of files transfered into HDFS.
 #        If empty - intergarion process is  omitted
 #
+#     HVR_DBRK_ADAPT_DDL_ADD_COL (optional)
+#        If set to 'on', and if script detects columns in HVR_COL_NAMES_BASE that do
+#        do not exist in the target table, the script will add them to the target.
+#
 #     HVR_DBRK_DSN               (required, unless overridden by HVR_DBRK_CONNECT_STRING)
 #        Provides the DSN for the connection to Databricks
 #
@@ -300,6 +304,7 @@
 #                          Fixed bug, error thrown if target table not exist but burst does
 #     03/22/2022 RLR v1.59 Disable unmanaged burst
 #     03/25/2022 RLR v1.60 Fixed parsing of HVR_FILE_LOC when auth uses InstanceProfile
+#     04/05/2022 RLR v1.61 Add partial support for DDL (ADD column only)
 #
 ################################################################################
 import sys
@@ -317,7 +322,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.60"
+VERSION = "1.61"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -398,6 +403,7 @@ class Options:
     insert_after_merge_dels_and_upds = False
     partition_columns = {}
     parallel_count = 0
+    adapt_add_cols = False
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -551,6 +557,8 @@ def env_load():
             print("Invalid value '{}' defined for HVR_DBRK_CONNECT_TIMEOUT; must be integer".format(conn_timeout))
     if os.getenv('HVR_DBRK_TIMEKEY', '').upper() == 'ON':
         options.target_is_timekey = True
+    if os.getenv('HVR_DBRK_ADAPT_DDL_ADD_COL', '').upper() == 'ON':
+        options.adapt_add_cols = True
     options.database = os.getenv('HVR_DBRK_DATABASE', '')
     tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES','')
     if tblproperties:
@@ -695,6 +703,8 @@ def trace_input():
     if options.file_pattern:
         trace(3, "File name elements: ({}) {}".format(options.tblname_in_file_pattern, options.file_pattern))
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
+    if options.adapt_add_cols:
+        trace(3, "If a column exists in HVR and not in the target table, add it to the target")
     if options.recreate_tables_on_refresh and options.context:
         trace(3, "Use context '{}' when processing actions that apply to the table".format(options.context))
     if options.ignore_columns:
@@ -1448,12 +1458,14 @@ def hvr6_init_createtable_info():
             g_column_props.append(action)
     show_actions("ColumnProperties", g_column_props)
 
-def hvr6_get_table_info(tablename):
+def hvr6_get_table_info(tablename, just_these_cols = []):
     table_props = get6_table(tablename)
 
     target_columns = []
     column = []
     for nam, props in table_props['cols'].items():
+        if just_these_cols and not nam.lower() in just_these_cols:
+            continue
         if column:
             target_columns.append(column)
         column = [nam, nam, '0', '', '0', '0']
@@ -2415,6 +2427,43 @@ def replace_target_table(target_table, columns, col_types, partition_cols):
     trace(1, "Replacing table {} for truncate".format(target_table))
     execute_sql(create_sql, 'Replace')
 
+def new_source_columns(columns, target_cols, target_table, hvr_table):
+    new_cols = {}
+    trace(4, "HVR column list {}".format(columns))
+    trace(4, "Target table column list {}".format(target_cols))
+    for col in columns:
+        if not col in target_cols:
+            new_cols[col] = 'string'
+    if new_cols.keys():
+        trace(3, "Columns added to source: {}".format(new_cols))
+    if not new_cols.keys() or not options.adapt_add_cols:
+        return {}
+    if not options.hvr_6:
+        print("Adapt DDL for ALTER TABLE ADD COLUMN only supported in HVR 6")
+        return {}
+    if not Connections.hvr6:
+        initialize_hvr_connect()
+        init_createtable_info()
+    columns = hvr6_get_table_info(hvr_table, new_cols.keys())
+    show_columns(columns)
+    for colprop in g_column_props:
+       if table_matches(colprop[C_TBL], hvr_table):
+           columns = apply_column_property(hvr_table, colprop, columns)
+    trace(2, '')
+    show_columns(columns)
+    alter_sql = "ALTER TABLE {} ".format(target_table)
+    alter_sql += "ADD columns ("
+    sep = ' '
+    for col in columns:
+        col_type = databricks_datatype(col)
+        alter_sql += "{} `{}` {}".format(sep, col[1], col_type)
+        new_cols[col[1]] = col_type
+        sep = ','
+    alter_sql += ")"
+    execute_sql(alter_sql, 'Alter')
+    trace(3, "Columns added to source: {}".format(new_cols))
+    return new_cols
+
 def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
     all_columns = columns.copy()
     all_types = col_types.copy()
@@ -2944,6 +2993,11 @@ def process_table(tab_entry, file_list, numrows):
         # If using managed burst, always CREATE OR REPLACE to create or truncate the table
         # If using existing and using unmanaged burst, skip burst table creation
         if not target_cols:
+            use_existing_burst = False
+        else:
+            new_cols = new_source_columns(columns, target_cols, target_table, tab_entry[1])
+        if new_cols:
+            col_types.update(new_cols)
             use_existing_burst = False
         else:
             use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)

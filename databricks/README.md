@@ -307,3 +307,4 @@ not set table properties during refresh.
 | 1.58    | 03/16/22 | Do not fail if a table is removed from the channel |
 | 1.59    | 03/22/22 | Disable unmanaged burst |
 | 1.60    | 03/22/22 | Fixed parsing of HVR_FILE_LOC when auth uses InstanceProfile |
+| 1.61    | 04/05/22 | Add partial support for DDL (ADD column only) |
