@@ -307,6 +307,7 @@
 #     03/25/2022 RLR v1.60 Fixed parsing of HVR_FILE_LOC when auth uses InstanceProfile
 #     04/05/2022 RLR v1.61 Add partial support for DDL (ADD column only)
 #                          On HVR6 hub connection, make SSL verification optional
+#     04/08/2022 RLR v1.62 Add partial support for DDL (ADD column only) - HVR 5 (1.61 is HVR 6 only)
 #
 ################################################################################
 import sys
@@ -324,7 +325,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.61"
+VERSION = "1.62"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -367,6 +368,7 @@ class Options:
     database = None
     channel_export = ''
     hvr_opts = []
+    hvr_repo = False
     url = ''
     resource = ''
     container = ''
@@ -1685,13 +1687,14 @@ def get_property(params, prop_name):
 def get_sequence(col):
     return int(col[2])
 
-def target_columns(table):
+def hvr5_get_table_info(table, just_these_cols):
 #  HVR_COLUMN_COLS= ['chn_name', 'tbl_name', 'col_sequence', 'col_name', 'col_key', 'col_datatype', 'col_length', 'col_nullable']
     repo_columns = get_table_columns(table)
     target_cols = []
     repo_columns.sort(key=get_sequence)
     for col in repo_columns:
-        target_cols.append([col[3], col[3], col[4], col[5], col[6], col[7]])
+        if not just_these_cols or col[3].lower() in just_these_cols:
+            target_cols.append([col[3], col[3], col[4], col[5], col[6], col[7]])
     return target_cols
 
 def process_datatype_match(datatype_match):
@@ -1902,6 +1905,7 @@ def initialize_hvr_connect():
         options.hub = args[1]
         Connections.hvr6 = Client(uri=uri, username=user, password=pwd, verify_ssl=options.verify_ssl)
         trace(2, "Connection to HVR valid, hubdb = {}".format(options.hub))
+    options.hvr_repo = True
 
 ##### Main function ############################################################
 
@@ -2449,13 +2453,10 @@ def new_source_columns(columns, target_cols, target_table, hvr_table):
         trace(3, "Columns added to source: {}".format(new_cols))
     if not new_cols.keys() or not options.adapt_add_cols:
         return {}
-    if not options.hvr_6:
-        print("Adapt DDL for ALTER TABLE ADD COLUMN only supported in HVR 6")
-        return {}
-    if not Connections.hvr6:
+    if not options.hvr_repo:
         initialize_hvr_connect()
         init_createtable_info()
-    columns = hvr6_get_table_info(hvr_table, new_cols.keys())
+    columns = get_columns_from_repo(hvr_table, new_cols.keys())
     show_columns(columns)
     for colprop in g_column_props:
        if table_matches(colprop[C_TBL], hvr_table):
@@ -2666,12 +2667,15 @@ def check_target_table(target_table, table_type):
             if table_type[0] == "EXTERNAL":
                 trace(1, "Warning: external location is not configured; existing table is external")
 
+def get_columns_from_repo(hvr_table, just_these_cols = []):
+    if options.hvr_6:
+        return hvr6_get_table_info(hvr_table, just_these_cols)
+    else:
+        return hvr5_get_table_info(hvr_table, just_these_cols)
+
 def recreate_target_table(target_table, hvr_table, table_type):
     #  get the create table DDL - only drop when successful
-    if options.hvr_6:
-        columns = hvr6_get_table_info(hvr_table)
-    else:
-        columns = target_columns(hvr_table)
+    columns = get_columns_from_repo(hvr_table)
     check_target_table(target_table, table_type)
     create_sql = get_create_table_ddl(hvr_table, target_table, columns)
     trace(1, "Creating table " + target_table)
