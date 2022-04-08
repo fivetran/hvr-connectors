@@ -308,6 +308,7 @@
 #     04/05/2022 RLR v1.61 Add partial support for DDL (ADD column only)
 #                          On HVR6 hub connection, make SSL verification optional
 #     04/08/2022 RLR v1.62 Add partial support for DDL (ADD column only) - HVR 5 (1.61 is HVR 6 only)
+#                          If 'truncate' of burst table fails, drop and recreate
 #
 ################################################################################
 import sys
@@ -2531,7 +2532,7 @@ def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
 
     return True
 
-def create_burst_table(burst_table_name, columns, col_types, burst_columns):
+def create_burst_table(burst_table_name, columns, col_types, burst_columns, just_try):
     create_sql = "CREATE OR REPLACE TABLE {0} ".format(burst_table_name)
     create_sql += "("
     for col in columns:
@@ -2544,10 +2545,15 @@ def create_burst_table(burst_table_name, columns, col_types, burst_columns):
     create_sql = create_sql[:-1]
     create_sql += ") using DELTA"
     trace(1, "Creating table " + burst_table_name)
-    execute_sql(create_sql, 'Create')
+    if just_try:
+        if not sql_succeeded(create_sql, 'Create', ' '):
+            return False
+    else:
+        execute_sql(create_sql, 'Create')
     if options.load_burst_delay:
         trace(3, "Sleep {} seconds before COPY INTO".format(options.load_burst_delay))
         time.sleep(options.load_burst_delay)
+    return True
 
 def describe_table(table_name, columns, burst_columns):
     col_list = []
@@ -3019,7 +3025,9 @@ def process_table(tab_entry, file_list, numrows):
         if not use_existing_burst:
             drop_table(load_table)
         if not options.use_unmanaged_burst_table:
-            create_burst_table(load_table, columns, col_types, burst_columns)
+            if not create_burst_table(load_table, columns, col_types, burst_columns, True):
+                drop_table(load_table)
+                create_burst_table(load_table, columns, col_types, burst_columns)
         elif not use_existing_burst:
             define_burst_table(load_table, columns, col_types, burst_columns)
 
