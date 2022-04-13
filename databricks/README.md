@@ -309,3 +309,4 @@ not set table properties during refresh.
 | 1.60    | 03/22/22 | Fixed parsing of HVR_FILE_LOC when auth uses InstanceProfile |
 | 1.61    | 04/05/22 | Add partial support for DDL (ADD column only), make SSL verification optional |
 | 1.62    | 04/08/22 | Implemented partial DDL support for HVR 5 |
+| 1.63    | 04/13/22 | Log a message after: 1) the target table is created, 2) columns are added |

@@ -309,6 +309,7 @@
 #                          On HVR6 hub connection, make SSL verification optional
 #     04/08/2022 RLR v1.62 Add partial support for DDL (ADD column only) - HVR 5 (1.61 is HVR 6 only)
 #                          If 'truncate' of burst table fails, drop and recreate
+#     04/13/2022 RLR v1.63 Log a message after: 1) the target table is created, 2) columns are added
 #
 ################################################################################
 import sys
@@ -326,7 +327,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.62"
+VERSION = "1.63"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2474,7 +2475,10 @@ def new_source_columns(columns, target_cols, target_table, hvr_table):
         sep = ','
     alter_sql += ")"
     execute_sql(alter_sql, 'Alter')
-    trace(3, "Columns added to source: {}".format(new_cols))
+    schema = ''
+    if options.database:
+        schema = options.database + '.'
+    print("Table `{}{}` altered; added column(s) {}".format(schema, target_table, new_cols))
     return new_cols
 
 def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
@@ -2686,6 +2690,10 @@ def recreate_target_table(target_table, hvr_table, table_type):
     create_sql = get_create_table_ddl(hvr_table, target_table, columns)
     trace(1, "Creating table " + target_table)
     execute_sql(create_sql, 'Create')
+    schema = 'default'
+    if options.database:
+        schema = options.database
+    print("Table `{}` created in database `{}`".format(target_table, schema))
 
 #
 # Process the data
