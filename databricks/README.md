@@ -55,6 +55,8 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_FILESTORE_ID      |   Maybe   | The AWS Access Key for connecting to the target location |
 | HVR_DBRK_FILESTORE_KEY     |   Maybe   | The Azure Access Key or the AWS Secret Key for connecting to the target location |
 | HVR_DBRK_FILESTORE_REGION  |     No    | The region where the S3 bucket resides - for connecting to the target location |
+| HVR_DBRK_ADAPT_DDL_ADD_COL |     No    | If set, script detects new columns and adds them during integrate if <br>HVR_DBRK_HVRCONNECT is configured |
+| HVR_DBRK_BURST_EXTERNAL_LOC|     No    | The location for the unmanaged burst table |
 | HVR_DBRK_CONNECT_STRING    |     No    | Replaces HVR_DBRK_DSN if desired |
 | HVR_DBRK_CONNECT_TIMEOUT   |     No    | If set, the connection to the cluster will have the specified timeout (seconds) |
 | HVR_DBRK_DATABASE          |     No    | Specifies the target database, if not the default |
@@ -164,12 +166,11 @@ If set to 'none' the connector will not check that the files exist, nor will it 
 If set to '+cleanup' the connector will delete any files it finds in the folder during the 'check' phase that are not part of this integrate cycle.  Note that to enable '+cleanup', HVR_DBRK_FILE_EXPR must be set to the value of Integrate /RenameExpression and the pathname specified by HVR_DBRK_FILE_EXPR must include {hvr_tbl_name} as an element in a folder, not just the file name.
 
 ## Burst table
-The script creates the burst table as a managed table and then uses COPY INTO to load the burst table.
+If HVR_DBRK_BURST_EXTERNAL_LOC is set, the script creates the burst table as an unmanaged table.  Otherwise it creates the burst table as a managed table.  The burst table is loaded using the COPY INTO sql.  Burst tables are not dropped when the script is done.  Before using an existing burst table, the scirpt checks to see if it needs to be re-created and, if so, drops the existing burst table.  The sql to create the burst table, and to truncate the burst table, is the same sql:  CREATE OR REPLACE TABLE ...
 
 ## Target is a replication copy
 To maintain a replication copy, the connector requires that the following ColumnProperties actions are defined. Note 
 that the connector will not apply these columns to the Databricks target table.
-:w
 
     ColumnProperties /Name=op_type /Extra /IntegrateExpression={hvr_op} /Datatype=integer /Context=!refresh
     ColumnProperties /Name=is_deleted /Extra /SoftDelete /Datatype=integer /Context=!refresh
@@ -228,6 +229,9 @@ If there are ColumnProperties actions tied to a Context, and that Context is use
 The table can be configured so that partitioning is defined upon create with HVR_DBRK_PARTITION_table.   Set "table" to the HVR table name and set the Value of the Environment action to a comma separated list of columns.  For example:
 
        /Name=HVR_DBRK_PARTITION_kc4col /Value=c2,c1
+
+## DDL changes
+The script can be configured to automatically add columns.  If an AdaptDDL action is created for the source group, HVR will automatically add the column to internal caches and will start adding that column's values to the CDC data transmitted to the target.  If the Environment action HVR_DBRK_ADAPT_DDL_ADD_COL=on is set on the target group, the script will check to see if there are extra columns in the incoming data that do not exist in the target table and, if there are, add them.  Note that to do this the script must query the repository to get the data types and so HVR_DBRK_HVRCONNECT must also be set.
 
 ## Sliced Refresh
 If the environment variable HVR_DBRK_SLICE_REFRESH_ID is set on a refresh, the connector will use locking and control functionality to ensure that the target table is truncated or created only at the beginning, and that only one slice job at a time accesses the target table.  This logic is in conjunction with the hvrslicedrefresh.py script.
@@ -310,3 +314,4 @@ not set table properties during refresh.
 | 1.61    | 04/05/22 | Add partial support for DDL (ADD column only), make SSL verification optional |
 | 1.62    | 04/08/22 | Implemented partial DDL support for HVR 5 |
 | 1.63    | 04/13/22 | Log a message after: 1) the target table is created, 2) columns are added |
+| 1.64    | 04/20/22 | Re-implemented unmanaged burst with an external loc & burst is loaded |
