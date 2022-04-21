@@ -166,7 +166,7 @@ If set to 'none' the connector will not check that the files exist, nor will it 
 If set to '+cleanup' the connector will delete any files it finds in the folder during the 'check' phase that are not part of this integrate cycle.  Note that to enable '+cleanup', HVR_DBRK_FILE_EXPR must be set to the value of Integrate /RenameExpression and the pathname specified by HVR_DBRK_FILE_EXPR must include {hvr_tbl_name} as an element in a folder, not just the file name.
 
 ## Burst table
-If HVR_DBRK_BURST_EXTERNAL_LOC is set, the script creates the burst table as an unmanaged table.  Otherwise it creates the burst table as a managed table.  The burst table is loaded using the COPY INTO sql.  Burst tables are not dropped when the script is done.  Before using an existing burst table, the scirpt checks to see if it needs to be re-created and, if so, drops the existing burst table.  The sql to create the burst table, and to truncate the burst table, is the same sql:  CREATE OR REPLACE TABLE ...
+If HVR_DBRK_BURST_EXTERNAL_LOC is set, the script creates the burst table as an unmanaged table.  Otherwise it creates the burst table as a managed table.  The burst table is loaded using the COPY INTO sql.  Burst tables are not dropped when the script is done.  Before using an existing burst table, the script checks to see if it needs to be re-created and, if so, drops the existing burst table.  The sql to create the burst table, and to truncate the burst table, is the same sql:  CREATE OR REPLACE TABLE ...
 
 ## Target is a replication copy
 To maintain a replication copy, the connector requires that the following ColumnProperties actions are defined. Note 
@@ -315,3 +315,4 @@ not set table properties during refresh.
 | 1.62    | 04/08/22 | Implemented partial DDL support for HVR 5 |
 | 1.63    | 04/13/22 | Log a message after: 1) the target table is created, 2) columns are added |
 | 1.64    | 04/20/22 | Re-implemented unmanaged burst with an external loc & burst is loaded |
+| 1.65    | 04/21/22 | Fixed implementation of ADD DDL when new column isnt in input file |

@@ -306,6 +306,7 @@
 #                          If 'truncate' of burst table fails, drop and recreate
 #     04/13/2022 RLR v1.63 Log a message after: 1) the target table is created, 2) columns are added
 #     04/20/2022 RLR v1.64 Re-implemented unmanaged burst with an external loc & burst is loaded
+#     04/21/2022 RLR v1.65 Fixed implementation of ADD DDL when new column isnt in input file
 #
 ################################################################################
 import sys
@@ -323,7 +324,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.64"
+VERSION = "1.65"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2371,6 +2372,25 @@ def sql_succeeded(sql_stmt, sql_name, return_if_error_has):
         raise
     return True
 
+def try_sql(sql_stmt, sql_name, return_if_error_has):
+    trace(2, "Execute: {0}".format(sql_stmt))
+    try:
+        Connections.cursor.execute(sql_stmt)
+        Connections.cursor.commit()
+    except pyodbc.Error as ex:
+        if return_if_error_has in str(ex):
+            trace(3, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
+            return str(ex)
+        print("{0} SQL failed: {1}".format(sql_name, sql_stmt))
+        raise ex
+    except Exception as ex:
+        print("Executing {0} SQL raised: {1}".format(sql_name, type(ex)))
+        raise ex
+    except:
+        print("Executing {0} SQL generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0])))
+        raise
+    return ''
+
 def set_database():
     set_sql = "USE {}".format(options.database)
     trace(1, set_sql)
@@ -2863,11 +2883,32 @@ def apply_burst_table_changes_to_target(burst_table, target_table, columns, keyl
     else:
         merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
 
-def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list):
+def extract_missing_col(error_message):
+    sl = error_message.find('cannot resolve ')
+    if sl < 0:
+        trace(2, "Exception return from extract_missing_col: cannot find 'cannot resolve '")
+        return ''
+    sl += len('cannot resolve ')
+    sl = error_message.find("'`", sl)
+    if sl < 0:
+        trace(2, "Exception return from extract_missing_col: cannot find '`")
+        return ''
+    sl = sl + 2
+    el = error_message.find("`'", sl)
+    if el < 0:
+        trace(2, "Exception return from extract_missing_col: cannot find `'")
+        return ''
+    trace(2, "Return '{}' from extract_missing_col".format(error_message[sl:el]))
+    return error_message[sl:el]
+
+def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list, skip_cols, do_try):
+    trace(2, "Do COPY INTO SQL for {}, columns {}, skip {}, try {}".format(load_table, columns, skip_cols, do_try))
     copy_sql = ''
     copy_sql += "COPY INTO {0} FROM ".format(load_table)
     copy_sql += "(SELECT "
     for col in columns:
+        if col in skip_cols:
+            continue
         if col in col_types:
             type_func = col_types[col]
             if '(' in type_func:
@@ -2899,16 +2940,35 @@ def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list):
     copy_sql += "COPY_OPTIONS ('force' = 'true')"
 
     trace(1, "Copying from the file store into " + load_table)
+    if do_try:
+        return try_sql(copy_sql, 'Copy', 'given input columns:')
     execute_sql(copy_sql, 'Copy')
+    return ''
 
+def do_copy_into(load_table, columns, col_types, burst_columns, file_list):
+    missing_cols = []
+    if options.mode == "integ_end" and not options.target_is_timekey:
+        err_msg = do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list, [], True)
+        if not err_msg:
+            return
+        trace(2, "COPY INTO sql failed with: {}".format(err_msg))
+        if not options.adapt_add_cols:
+            raise Exception(err_msg)
+        col = extract_missing_col(err_msg)
+        if not col:
+            print("HVR_DBRK_ADAPT_DDL_ADD_COL enabled; cannot find missing column")
+            raise Exception(err_msg)
+        missing_cols = [col]
+    do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list, missing_cols, False)
+    
 def copy_into_delta_table(load_table, columns, col_types, burst_columns, file_list):
     MAX_COPY_FILES = 1000
     if len(file_list) <= MAX_COPY_FILES:
-        do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list)
+        do_copy_into(load_table, columns, col_types, burst_columns, file_list)
         return
     for slice in range(0, 1+int(len(file_list)/MAX_COPY_FILES)):
         trace(3, "COPY INTO files {} to {}".format(slice, (slice*MAX_COPY_FILES), (slice+1)*MAX_COPY_FILES-1))
-        do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list[(slice*MAX_COPY_FILES):(slice+1)*MAX_COPY_FILES])
+        do_copy_into(load_table, columns, col_types, burst_columns, file_list[(slice*MAX_COPY_FILES):(slice+1)*MAX_COPY_FILES])
 
 def process_table(tab_entry, file_list, numrows):
     global file_counter
