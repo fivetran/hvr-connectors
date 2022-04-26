@@ -316,3 +316,4 @@ not set table properties during refresh.
 | 1.63    | 04/13/22 | Log a message after: 1) the target table is created, 2) columns are added |
 | 1.64    | 04/20/22 | Re-implemented unmanaged burst with an external loc & burst is loaded |
 | 1.65    | 04/21/22 | Fixed implementation of ADD DDL when new column isnt in input file |
+| 1.66    | 04/26/22 | Fixed implementation of ADD DDL to work with timekey & truncate refresh |

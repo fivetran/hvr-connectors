@@ -307,6 +307,7 @@
 #     04/13/2022 RLR v1.63 Log a message after: 1) the target table is created, 2) columns are added
 #     04/20/2022 RLR v1.64 Re-implemented unmanaged burst with an external loc & burst is loaded
 #     04/21/2022 RLR v1.65 Fixed implementation of ADD DDL when new column isnt in input file
+#     04/26/2022 RLR v1.66 Fixed implementation of ADD DDL to work with timekey & truncate refresh
 #
 ################################################################################
 import sys
@@ -324,7 +325,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.65"
+VERSION = "1.66"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -1779,6 +1780,15 @@ def apply_column_property(table, prop, columns):
     
     return columns
 
+def apply_modify_property(table, prop, columns):
+    params = prop[C_PRM]
+    if options.context:
+        context = get_property(params, 'Context')
+        if context and context != options.context:
+            return columns
+    modify_column(params, columns)
+    return columns
+
 def show_actions(actname, actlist):
     trace(2, "{}({})".format(actname, len(actlist)))
     if options.trace > 1:
@@ -2451,7 +2461,7 @@ def new_source_columns(columns, target_cols, target_table, hvr_table):
     show_columns(columns)
     for colprop in g_column_props:
        if table_matches(colprop[C_TBL], hvr_table):
-           columns = apply_column_property(hvr_table, colprop, columns)
+           columns = apply_modify_property(hvr_table, colprop, columns)
     trace(2, '')
     show_columns(columns)
     alter_sql = "ALTER TABLE {} ".format(target_table)
@@ -2947,7 +2957,7 @@ def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list, s
 
 def do_copy_into(load_table, columns, col_types, burst_columns, file_list):
     missing_cols = []
-    if options.mode == "integ_end" and not options.target_is_timekey:
+    if options.mode == "integ_end" or options.truncate_target_on_refresh:
         err_msg = do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list, [], True)
         if not err_msg:
             return
@@ -3029,15 +3039,16 @@ def process_table(tab_entry, file_list, numrows):
     if not col_types:
         columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
 
+    new_cols = None
+    if target_cols:
+        new_cols = new_source_columns(columns, target_cols, target_table, tab_entry[1])
+        if new_cols:
+            col_types.update(new_cols)
+
     if use_burst_logic:
         # Use the existing burst table if it matches
         # If using managed burst, always CREATE OR REPLACE to create or truncate the table
-        if not target_cols:
-            use_existing_burst = False
-        else:
-            new_cols = new_source_columns(columns, target_cols, target_table, tab_entry[1])
-        if new_cols:
-            col_types.update(new_cols)
+        if not target_cols or new_cols:
             use_existing_burst = False
         else:
             use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
