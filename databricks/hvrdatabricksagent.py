@@ -308,6 +308,7 @@
 #     04/20/2022 RLR v1.64 Re-implemented unmanaged burst with an external loc & burst is loaded
 #     04/21/2022 RLR v1.65 Fixed implementation of ADD DDL when new column isnt in input file
 #     04/26/2022 RLR v1.66 Fixed implementation of ADD DDL to work with timekey & truncate refresh
+#     05/02/2022 RLR v1.67 Fixed multi-delete SQL
 #
 ################################################################################
 import sys
@@ -325,7 +326,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.66"
+VERSION = "1.67"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2724,7 +2725,10 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     else:
         sql = "UPDATE "
         dml = 'Update'
-    sql += "{0} AS t SET {1} = 1 WHERE EXISTS (SELECT {2} FROM {3} WHERE ".format(target_table, options.isdeleted, selkeys, burst_table)
+    sql += "{} AS t ".format(target_table)
+    if not options.no_isdeleted_on_target:
+        sql += "SET {} = 1 ".format(options.isdeleted)
+    sql += "WHERE EXISTS (SELECT {0} FROM {1} WHERE ".format(selkeys, burst_table)
     for key in md_keys:
         sql += " t.{0} = {0} AND".format(key)
     sql += " {} = 8)".format(options.optype)
@@ -2805,6 +2809,11 @@ def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys,
         trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
         time.sleep(options.merge_delay)
 
+    skip_clause = ''
+    if multidelete_table(target_table):
+        do_multi_delete(burst_table, target_table, columns, keys)
+        skip_clause = ' AND b.{} != 8'.format(options.optype)
+
     merge_keys = keys
     for col in partition_cols:
         if not col in merge_keys:
@@ -2815,7 +2824,7 @@ def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys,
     for key in merge_keys:
         merge_sql += " b.`{0}` as merge{0},".format(key)
     merge_sql += " b.* FROM {} b".format(burst_table)
-    merge_sql += " WHERE b.{} = 1) m ".format(options.isdeleted)
+    merge_sql += " WHERE b.{} = 1{}) m ".format(options.isdeleted, skip_clause)
     merge_sql += " ON"
     for key in merge_keys:
         merge_sql += " a.`{0}` = merge{0} AND".format(key)
