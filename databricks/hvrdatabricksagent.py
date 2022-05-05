@@ -308,6 +308,8 @@
 #     04/20/2022 RLR v1.64 Re-implemented unmanaged burst with an external loc & burst is loaded
 #     04/21/2022 RLR v1.65 Fixed implementation of ADD DDL when new column isnt in input file
 #     04/26/2022 RLR v1.66 Fixed implementation of ADD DDL to work with timekey & truncate refresh
+#     05/02/2022 RLR v1.67 Fixed multi-delete SQL
+#     05/05/2022 RLR v1.68 Use derived columns in burst table/merge
 #
 ################################################################################
 import sys
@@ -325,7 +327,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.66"
+VERSION = "1.68"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2443,12 +2445,14 @@ def replace_target_table(target_table, columns, col_types, partition_cols):
     trace(1, "Replacing table {} for truncate".format(target_table))
     execute_sql(create_sql, 'Replace')
 
-def new_source_columns(columns, target_cols, target_table, hvr_table):
+def new_source_columns(columns, target_cols, derived_target_cols, target_table, hvr_table):
     new_cols = {}
     trace(4, "HVR column list {}".format(columns))
     trace(4, "Target table column list {}".format(target_cols))
+    if derived_target_cols:
+        trace(4, "Target table derived column list {}".format(derived_target_cols))
     for col in columns:
-        if not col in target_cols:
+        if not col in target_cols and not col in derived_target_cols:
             new_cols[col] = 'string'
     if new_cols.keys():
         trace(3, "Columns added to source: {}".format(new_cols))
@@ -2538,7 +2542,7 @@ def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
 
     return True
 
-def create_burst_table(burst_table_name, columns, col_types, burst_columns, just_try):
+def create_burst_table(burst_table_name, columns, col_types, burst_columns, target_table, just_try):
     create_sql = "CREATE OR REPLACE TABLE {0} ".format(burst_table_name)
     create_sql += "("
     for col in columns:
@@ -2573,6 +2577,7 @@ def describe_table(table_name, columns, burst_columns):
     trace(2, "Execute: {0}".format(sql_stmt))
     col_types = {}
     part_cols = []
+    xtra_part_cols = []
     targ_cols = []
     table_type = []
     external_loc = ''
@@ -2597,8 +2602,11 @@ def describe_table(table_name, columns, burst_columns):
             if add_partitions:
                 if col[0] == "Not partitioned":
                     add_partitions = False
-                elif col[1] and col[1].lower() in col_list:
-                    part_cols.append(col[1])
+                elif col[1]:
+                    if col[1].lower() in col_list:
+                        part_cols.append(col[1])
+                    else:
+                        xtra_part_cols.append(col[1])
                 continue
             if table_details and col[0] == "Location":
                 external_loc = col[1]
@@ -2614,12 +2622,14 @@ def describe_table(table_name, columns, burst_columns):
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
         if "Table or view not found" in ex.args[1]:
-            return col_list, col_types, part_cols, targ_cols, table_type
+            return col_list, col_types, part_cols, targ_cols, [], table_type
         print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
     except Exception as ex:
         print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
+    if xtra_part_cols:
+        col_list, col_types, part_cols, xtra_part_cols = check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_cols)
     if table_type:
         table_type.append(external_loc)
     trace(2, "Columns: {}".format(col_list))
@@ -2627,23 +2637,49 @@ def describe_table(table_name, columns, burst_columns):
     trace(2, "Partition columns: {}".format(part_cols))
     trace(2, "Target columns: {}".format(targ_cols))
     trace(2, "Table type: {}".format(table_type))
-    return col_list, col_types, part_cols, targ_cols, table_type
+    return col_list, col_types, part_cols, targ_cols, xtra_part_cols, table_type
 
-def get_partition_values(table_name, column):
-    sql_stmt = "SELECT DISTINCT({}) FROM {}".format(column, table_name)
-    trace(1, "Get partition values in burst table {}.{}".format(table_name, column))
-    vlist = ''
+def check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_cols):
+    sql_stmt = "SHOW CREATE TABLE {0}".format(table_name)
+    trace(1, "Create table DDL for " + table_name)
+    trace(2, "Execute: {0}".format(sql_stmt))
+    tabddl = None
     try:
         Connections.cursor.execute(sql_stmt)
-        while True:
-            col = Connections.cursor.fetchone()
-            if not col:
-                break
-            vlist += "'{}',".format(col[0])
-            trace(3, "  {0}".format(col))
+        tabddl = Connections.cursor.fetchone()
     except pyodbc.Error as ex:
-        print("Get partition values SQL failed: {1}".format(sql_stmt))
-    return vlist[:-1]
+        if "Table or view not found" in ex.args[1]:
+            trace(2, "{} not found".format(table_name))
+            return col_list, col_types, part_cols
+        print("Show SQL failed: {}".format(sql_stmt))
+        raise ex
+    except Exception as ex:
+        print("Show SQL failed: {}".format(sql_stmt))
+        raise ex
+    ddl_lines = tabddl[0].split('\n')
+    for line in ddl_lines:
+        trace(2, "{}".format(line))
+        if 'GENERATED ALWAYS AS' in line:
+            colname, coltype = parse_derived_spec(line)
+            trace(2, "     --> {}:{}".format(colname, coltype))
+            if colname in xtra_part_cols:
+                col_list.append(colname)
+                col_types[colname] = coltype
+                part_cols.append(colname)
+            else:
+                xtra_part_cols.remove(colname)
+    return col_list, col_types, part_cols, xtra_part_cols
+
+def parse_derived_spec(line):
+    name = spec = ''
+    core = line.strip()
+    q1 = core.find(" ")
+    if q1 >= 0:
+        name = core[:q1]
+        spec = core[q1+1:-1]
+        if name[0] == "`":
+            name = name[1:-1]
+    return name, spec
 
 def set_table_properties(base_name):
     alter_sql = "ALTER TABLE {} SET TBLPROPERTIES ({})".format(base_name, options.set_tblproperties)
@@ -2724,7 +2760,10 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     else:
         sql = "UPDATE "
         dml = 'Update'
-    sql += "{0} AS t SET {1} = 1 WHERE EXISTS (SELECT {2} FROM {3} WHERE ".format(target_table, options.isdeleted, selkeys, burst_table)
+    sql += "{} AS t ".format(target_table)
+    if not options.no_isdeleted_on_target:
+        sql += "SET {} = 1 ".format(options.isdeleted)
+    sql += "WHERE EXISTS (SELECT {0} FROM {1} WHERE ".format(selkeys, burst_table)
     for key in md_keys:
         sql += " t.{0} = {0} AND".format(key)
     sql += " {} = 8)".format(options.optype)
@@ -2805,6 +2844,11 @@ def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys,
         trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
         time.sleep(options.merge_delay)
 
+    skip_clause = ''
+    if multidelete_table(target_table):
+        do_multi_delete(burst_table, target_table, columns, keys)
+        skip_clause = ' AND b.{} != 8'.format(options.optype)
+
     merge_keys = keys
     for col in partition_cols:
         if not col in merge_keys:
@@ -2815,7 +2859,7 @@ def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys,
     for key in merge_keys:
         merge_sql += " b.`{0}` as merge{0},".format(key)
     merge_sql += " b.* FROM {} b".format(burst_table)
-    merge_sql += " WHERE b.{} = 1) m ".format(options.isdeleted)
+    merge_sql += " WHERE b.{} = 1{}) m ".format(options.isdeleted, skip_clause)
     merge_sql += " ON"
     for key in merge_keys:
         merge_sql += " a.`{0}` = merge{0} AND".format(key)
@@ -2919,6 +2963,8 @@ def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list, s
     for col in columns:
         if col in skip_cols:
             continue
+        if 'GENERATED ALWAYS AS' in col_types[col]:
+            continue
         if col in col_types:
             type_func = col_types[col]
             if '(' in type_func:
@@ -3013,7 +3059,7 @@ def process_table(tab_entry, file_list, numrows):
             if ignore in columns:
                 columns.remove(ignore)
 
-    columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
+    columns, col_types, partition_cols, target_cols, derived_targ_cols, table_type = describe_table(target_table, columns, burst_columns)
     if not use_burst_logic:
         if options.mode == "refr_write_end":
             if refresh_options.job_name and refresh_options.slices_done > 1:
@@ -3037,11 +3083,11 @@ def process_table(tab_entry, file_list, numrows):
         return
 
     if not col_types:
-        columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
+        columns, col_types, partition_cols, target_cols, derived_targ_cols, table_type = describe_table(target_table, columns, burst_columns)
 
     new_cols = None
     if target_cols:
-        new_cols = new_source_columns(columns, target_cols, target_table, tab_entry[1])
+        new_cols = new_source_columns(columns, target_cols, derived_targ_cols, target_table, tab_entry[1])
         if new_cols:
             col_types.update(new_cols)
 
@@ -3054,9 +3100,9 @@ def process_table(tab_entry, file_list, numrows):
             use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
         if not use_existing_burst:
             drop_table(load_table)
-        if not create_burst_table(load_table, columns, col_types, burst_columns, True):
+        if not create_burst_table(load_table, columns, col_types, burst_columns, target_table, True):
             drop_table(load_table)
-            create_burst_table(load_table, columns, col_types, burst_columns, False)
+            create_burst_table(load_table, columns, col_types, burst_columns, target_table, False)
 
     t[2] = timer()
 
