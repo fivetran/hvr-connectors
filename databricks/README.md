@@ -318,4 +318,4 @@ not set table properties during refresh.
 | 1.65    | 04/21/22 | Fixed implementation of ADD DDL when new column isnt in input file |
 | 1.66    | 04/26/22 | Fixed implementation of ADD DDL to work with timekey & truncate refresh |
 | 1.67    | 05/02/22 | Fixed multi-delete SQL |
-| 1.68    | 05/03/22 | Use derived columns in burst table,merge |
+| 1.68    | 05/05/22 | Use derived columns in burst table,merge |

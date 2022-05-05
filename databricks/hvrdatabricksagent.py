@@ -309,7 +309,7 @@
 #     04/21/2022 RLR v1.65 Fixed implementation of ADD DDL when new column isnt in input file
 #     04/26/2022 RLR v1.66 Fixed implementation of ADD DDL to work with timekey & truncate refresh
 #     05/02/2022 RLR v1.67 Fixed multi-delete SQL
-#     05/03/2022 RLR v1.68 Use derived columns in burst table/merge
+#     05/05/2022 RLR v1.68 Use derived columns in burst table/merge
 #
 ################################################################################
 import sys
@@ -2445,12 +2445,14 @@ def replace_target_table(target_table, columns, col_types, partition_cols):
     trace(1, "Replacing table {} for truncate".format(target_table))
     execute_sql(create_sql, 'Replace')
 
-def new_source_columns(columns, target_cols, target_table, hvr_table):
+def new_source_columns(columns, target_cols, derived_target_cols, target_table, hvr_table):
     new_cols = {}
     trace(4, "HVR column list {}".format(columns))
     trace(4, "Target table column list {}".format(target_cols))
+    if derived_target_cols:
+        trace(4, "Target table derived column list {}".format(derived_target_cols))
     for col in columns:
-        if not col in target_cols:
+        if not col in target_cols and not col in derived_target_cols:
             new_cols[col] = 'string'
     if new_cols.keys():
         trace(3, "Columns added to source: {}".format(new_cols))
@@ -2620,14 +2622,14 @@ def describe_table(table_name, columns, burst_columns):
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
         if "Table or view not found" in ex.args[1]:
-            return col_list, col_types, part_cols, targ_cols, table_type
+            return col_list, col_types, part_cols, targ_cols, [], table_type
         print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
     except Exception as ex:
         print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
     if xtra_part_cols:
-        col_list, col_types, part_cols = check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_cols)
+        col_list, col_types, part_cols, xtra_part_cols = check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_cols)
     if table_type:
         table_type.append(external_loc)
     trace(2, "Columns: {}".format(col_list))
@@ -2635,7 +2637,7 @@ def describe_table(table_name, columns, burst_columns):
     trace(2, "Partition columns: {}".format(part_cols))
     trace(2, "Target columns: {}".format(targ_cols))
     trace(2, "Table type: {}".format(table_type))
-    return col_list, col_types, part_cols, targ_cols, table_type
+    return col_list, col_types, part_cols, targ_cols, xtra_part_cols, table_type
 
 def check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_cols):
     sql_stmt = "SHOW CREATE TABLE {0}".format(table_name)
@@ -2647,6 +2649,7 @@ def check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_col
         tabddl = Connections.cursor.fetchone()
     except pyodbc.Error as ex:
         if "Table or view not found" in ex.args[1]:
+            trace(2, "{} not found".format(table_name))
             return col_list, col_types, part_cols
         print("Show SQL failed: {}".format(sql_stmt))
         raise ex
@@ -2655,23 +2658,27 @@ def check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_col
         raise ex
     ddl_lines = tabddl[0].split('\n')
     for line in ddl_lines:
+        trace(2, "{}".format(line))
         if 'GENERATED ALWAYS AS' in line:
             colname, coltype = parse_derived_spec(line)
-            trace(2, "Derived column: {} {}".format(colname, coltype))
+            trace(2, "     --> {}:{}".format(colname, coltype))
             if colname in xtra_part_cols:
                 col_list.append(colname)
                 col_types[colname] = coltype
                 part_cols.append(colname)
-    return col_list, col_types, part_cols
+            else:
+                xtra_part_cols.remove(colname)
+    return col_list, col_types, part_cols, xtra_part_cols
 
 def parse_derived_spec(line):
     name = spec = ''
-    q1 = line.find("`")
+    core = line.strip()
+    q1 = core.find(" ")
     if q1 >= 0:
-        q2 = line.find("`", q1+1)
-        if q2 > q1:
-            name = line[q1+1:q2]
-            spec = line[q2+2:-1]
+        name = core[:q1]
+        spec = core[q1+1:-1]
+        if name[0] == "`":
+            name = name[1:-1]
     return name, spec
 
 def set_table_properties(base_name):
@@ -3052,7 +3059,7 @@ def process_table(tab_entry, file_list, numrows):
             if ignore in columns:
                 columns.remove(ignore)
 
-    columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
+    columns, col_types, partition_cols, target_cols, derived_targ_cols, table_type = describe_table(target_table, columns, burst_columns)
     if not use_burst_logic:
         if options.mode == "refr_write_end":
             if refresh_options.job_name and refresh_options.slices_done > 1:
@@ -3076,11 +3083,11 @@ def process_table(tab_entry, file_list, numrows):
         return
 
     if not col_types:
-        columns, col_types, partition_cols, target_cols, table_type = describe_table(target_table, columns, burst_columns)
+        columns, col_types, partition_cols, target_cols, derived_targ_cols, table_type = describe_table(target_table, columns, burst_columns)
 
     new_cols = None
     if target_cols:
-        new_cols = new_source_columns(columns, target_cols, target_table, tab_entry[1])
+        new_cols = new_source_columns(columns, target_cols, derived_targ_cols, target_table, tab_entry[1])
         if new_cols:
             col_types.update(new_cols)
 
