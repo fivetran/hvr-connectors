@@ -310,6 +310,9 @@
 #     04/26/2022 RLR v1.66 Fixed implementation of ADD DDL to work with timekey & truncate refresh
 #     05/02/2022 RLR v1.67 Fixed multi-delete SQL
 #     05/05/2022 RLR v1.68 Use derived columns in burst table/merge
+#     05/20/2022 RLR v1.69 Burst table: removed drop if needs to be recreated
+#                          Removed describe called by target table creation
+#                          Throw error if incoming data has column not in target & adapt not configured
 #
 ################################################################################
 import sys
@@ -327,7 +330,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.68"
+VERSION = "1.69"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2372,7 +2375,7 @@ def sql_succeeded(sql_stmt, sql_name, return_if_error_has):
         Connections.cursor.commit()
     except pyodbc.Error as ex:
         if return_if_error_has in str(ex):
-            trace(3, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
+            trace(2, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
             return False
         print("{0} SQL failed: {1}".format(sql_name, sql_stmt))
         raise ex
@@ -2391,7 +2394,7 @@ def try_sql(sql_stmt, sql_name, return_if_error_has):
         Connections.cursor.commit()
     except pyodbc.Error as ex:
         if return_if_error_has in str(ex):
-            trace(3, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
+            trace(2, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
             return str(ex)
         print("{0} SQL failed: {1}".format(sql_name, sql_stmt))
         raise ex
@@ -2423,28 +2426,6 @@ def truncate_table(table_name):
     trace(1, "Truncating table " + table_name)
     return sql_succeeded(truncate_sql, 'Truncate', 'Table not found')
 
-def replace_target_table(target_table, columns, col_types, partition_cols):
-    create_sql = "CREATE OR REPLACE TABLE {0} ".format(target_table)
-    create_sql += "("
-    for col in columns:
-        if not col in col_types:
-            raise Exception("Column {} is in HVR, but not in target table".format(col))
-        create_sql += "`{0}` {1},".format(col, col_types[col])
-    create_sql = create_sql[:-1]
-    create_sql += ") using DELTA"
-    if options.external_loc:
-        create_sql += " LOCATION '{}'".format(get_external_loc(options.external_loc, target_table))
-    if partition_cols:
-        create_sql += " PARTITIONED BY ("
-        for col in partition_cols:
-            create_sql += col + ","
-        create_sql = create_sql[:-1]
-        create_sql += ")"
-    if options.set_tblproperties:
-        create_sql += " TBLPROPERTIES ({})".format(options.set_tblproperties)
-    trace(1, "Replacing table {} for truncate".format(target_table))
-    execute_sql(create_sql, 'Replace')
-
 def new_source_columns(columns, target_cols, derived_target_cols, target_table, hvr_table):
     new_cols = {}
     trace(4, "HVR column list {}".format(columns))
@@ -2456,6 +2437,8 @@ def new_source_columns(columns, target_cols, derived_target_cols, target_table, 
             new_cols[col] = 'string'
     if new_cols.keys():
         trace(3, "Columns added to source: {}".format(new_cols))
+        if not options.adapt_add_cols:
+            raise Exception("Column {} in incoming data, not in the target table.  Set HVR_DBRK_HVRCONNECT and HVR_DBRK_ADAPT_DDL_ADD_COL to configure auto-add".format(new_cols.keys()))
     if not new_cols.keys() or not options.adapt_add_cols:
         return {}
     if not options.hvr_repo:
@@ -2731,7 +2714,8 @@ def get_columns_from_repo(hvr_table, just_these_cols = []):
 def recreate_target_table(target_table, hvr_table, table_type):
     #  get the create table DDL - only drop when successful
     columns = get_columns_from_repo(hvr_table)
-    check_target_table(target_table, options.external_loc, table_type)
+    if table_type:
+        check_target_table(target_table, options.external_loc, table_type)
     create_sql = get_create_table_ddl(hvr_table, target_table, columns)
     trace(1, "Creating table " + target_table)
     execute_sql(create_sql, 'Create')
@@ -2746,7 +2730,6 @@ def recreate_target_table(target_table, hvr_table, table_type):
 def do_multi_delete(burst_table, target_table, columns, keys):
     md_keys = keys[:]
     unused = unused_keys_in_multidelete(target_table)
-    print("unused keys {}".format(unused))
     if unused and unused in md_keys:
         md_keys.remove(unused)
     selkeys = ''
@@ -3059,7 +3042,6 @@ def process_table(tab_entry, file_list, numrows):
             if ignore in columns:
                 columns.remove(ignore)
 
-    columns, col_types, partition_cols, target_cols, derived_targ_cols, table_type = describe_table(target_table, columns, burst_columns)
     if not use_burst_logic:
         if options.mode == "refr_write_end":
             if refresh_options.job_name and refresh_options.slices_done > 1:
@@ -3069,7 +3051,7 @@ def process_table(tab_entry, file_list, numrows):
                 options.set_tblproperties = ''
             if options.recreate_tables_on_refresh:
                 # pass the HVR table name - the repository will provide the base_name
-                recreate_target_table(target_table, tab_entry[1], table_type)
+                recreate_target_table(target_table, tab_entry[1], None)
             else:
                 if options.truncate_target_on_refresh:
                     if options.refresh_restrict:
@@ -3082,8 +3064,7 @@ def process_table(tab_entry, file_list, numrows):
     if not file_list:
         return
 
-    if not col_types:
-        columns, col_types, partition_cols, target_cols, derived_targ_cols, table_type = describe_table(target_table, columns, burst_columns)
+    columns, col_types, partition_cols, target_cols, derived_targ_cols, table_type = describe_table(target_table, columns, burst_columns)
 
     new_cols = None
     if target_cols:
@@ -3098,11 +3079,12 @@ def process_table(tab_entry, file_list, numrows):
             use_existing_burst = False
         else:
             use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
-        if not use_existing_burst:
-            drop_table(load_table)
-        if not create_burst_table(load_table, columns, col_types, burst_columns, target_table, True):
-            drop_table(load_table)
-            create_burst_table(load_table, columns, col_types, burst_columns, target_table, False)
+        if use_existing_burst:
+            truncate_table(load_table)
+        else:
+            if not create_burst_table(load_table, columns, col_types, burst_columns, target_table, True):
+                drop_table(load_table)
+                create_burst_table(load_table, columns, col_types, burst_columns, target_table, False)
 
     t[2] = timer()
 
@@ -3124,7 +3106,7 @@ def process_table(tab_entry, file_list, numrows):
     if use_burst_logic:
         trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
                  " verify files: {3:.2f}s,"
-                 " create burst: {4:.2f}s,"
+                 " create/truncate burst: {4:.2f}s,"
                  " copy into burst: {5:.2f}s,"
                  " merge into target: {6:.2f}s,".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
     else:

@@ -4,7 +4,7 @@ This python script can be used to merge CDC changes and/or refresh a Databricks 
 ODBC to connect to Databricks and apply the changes.  Databricks hosted on Azure and AWS are supported.   
 
 To support this connector the target location is Azure Blob storage, Azure ADLS Gen2, or an S3 bucket.  A FileFormat
-action is configured for Csv with /HeaderLine (default), or Avro, Parquet, Json.  The Databricks cluster that is the 
+action is configured for Csv with /HeaderLine (default), or Avro, Parquet.  The Databricks cluster that is the 
 target for this connector must be configured with access to the Azure storage or S3 bucket.
 
 Integrate/Refresh writes table changes to the integrate location (Blob/ADLS store or S3 bucket) as files in the
@@ -42,7 +42,6 @@ The following options are available with this connector:
 - A FileFormat action with one of the following (the default is CSV)
   - /Csv /HeaderLine
   - /Avro
-  - /Json /RowFragments
   - /Parquet
 
 ## Environment variables
@@ -130,7 +129,7 @@ character, there are Environment actions to communicate these settings to the co
       HVR_DBRK_DELIMITER
       HVR_DBRK_LINE_SEPARATOR
 
-The connector also supports PARQUET, AVRO, and JSON files.   If the FileFormat action is set to one of these, use 
+The connector also supports PARQUET and AVRO files.   If the FileFormat action is set to one of these, use 
 HVR_DBRK_FILEFORMAT to communicate that setting to the connector.   
 
 If the FileFormat is AVRO or PARQUET, note that PARQUET and AVRO files have schema definitions in them.   These can a data 
@@ -138,8 +137,6 @@ type inconsistency error to be thrown.   For instance, HVR sets the precision of
 for the column does not specify a precision.   When DataBricks loads data from one of these files (with precision of at least 
 one column’s datatype set to 1000), Databricks will throw an error.   To prevent the error a ColumnProperties action should 
 be added to define a precision lower than or equal to 38.
-
-If the FileFormat is JSON, the JsonMode should be set to RowFragments.
 
 If using HVR 6, and the FileFormat is PARQUET, set BlockCompress=GZIP on the FileFormat action
 
