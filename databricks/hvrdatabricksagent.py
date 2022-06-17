@@ -313,6 +313,8 @@
 #     05/20/2022 RLR v1.69 Burst table: removed drop if needs to be recreated
 #                          Removed describe called by target table creation
 #                          Throw error if incoming data has column not in target & adapt not configured
+#     06/17/2022 RLR v1.70 Fixed precision/scale handling in create table, HVR6
+#                          Added support for ColumnProperties datatype match like [prec<=6 && scale=0]
 #
 ################################################################################
 import sys
@@ -1484,6 +1486,10 @@ def hvr6_get_table_info(tablename, just_these_cols = []):
                 column[2] = value
             if prop == "attributes":
                 for akey,aval in value.items():
+                    if akey == 'prec':
+                        column[4] = str(aval)
+                    if akey == 'scale' and column[4] != '0':
+                        column[4] = column[4] + ',' + str(aval)
                     if akey == "bytelen":
                         column[4] = str(aval)
                     if akey == "charlen":
@@ -1552,11 +1558,12 @@ def get_decimal_type(dtype, precision, scale):
         p = int(precision)
     if scale:
         s = int(scale)
+        if s < 0:
+            p = p + -s
+            s = 0
     if p > 38 or s > 37:
         return 'DOUBLE'
-    if s <= 0:
-        return 'DECIMAL({})'.format(precision)
-    return 'DECIMAL({},{})'.format(precision,scale)
+    return 'DECIMAL({},{})'.format(p,s)
 
 def databricks_datatype(col):
     name = col[1]
@@ -1695,10 +1702,22 @@ def hvr5_get_table_info(table, just_these_cols):
 def process_datatype_match(datatype_match):
     if datatype_match and datatype_match[-1] == "]" and "[" in datatype_match:
         ed = datatype_match.find('[')
-        if datatype_match[ed+1:-1] == "prec=0 && scale=0":
-            return datatype_match[:ed], '0'
+        match_str = datatype_match[ed+1:-1]
+        if match_str == "prec=0 && scale=0":
+            return datatype_match[:ed], '=', '0'
+        if match_str.startswith("prec") and match_str.endswith("scale=0"):
+            ep = match_str.find(' ')
+            if ep > 0:
+                prec = match_str[:ep]
+                if prec[5:6] == '=':
+                    mop = prec[4:6]
+                    prec = prec[6:]
+                else:
+                    mop = prec[4:5]
+                    prec = prec[5:]
+                return datatype_match[:ed], mop, prec
         trace(2, "Datatype match {}; attributes specified {}; not processed; expecting '{}'".format(datatype_match, datatype_match[ed+1:-1], "prec=0 && scale=0"))
-    return datatype_match, None
+    return datatype_match, None, None
 
 def remove_column(params, columns):
     colname = get_property(params, 'Name')
@@ -1741,7 +1760,7 @@ def add_column(params, columns):
 
 def modify_column(params, columns):
     colname = get_property(params, 'Name')
-    dtmatch, def_ps = process_datatype_match(get_property(params, 'DatatypeMatch'))
+    dtmatch, op_ps, def_ps = process_datatype_match(get_property(params, 'DatatypeMatch'))
 
     if colname:
         trace(3, "Process Column properties, modify column '{}'".format(colname))
@@ -1749,8 +1768,23 @@ def modify_column(params, columns):
         trace(3, "Process Column properties, match datatype '{}'".format(dtmatch))
     for col in columns:
         if col[0] == colname or dtmatch == col[3]:
-            if dtmatch and def_ps and def_ps != col[4]:
-                continue
+            if dtmatch and def_ps:
+                if ',' in col[4]:
+                    continue
+                if op_ps == '=' and def_ps != col[4]:
+                    continue
+                try:
+                    if op_ps == '<' and int(col[4]) >= int(def_ps):
+                        continue
+                    if op_ps == '>' and int(col[4]) <= int(def_ps):
+                        continue
+                    if op_ps == '<=' and int(col[4]) > int(def_ps):
+                        continue
+                    if op_ps == '>=' and int(col[4]) < int(def_ps):
+                        continue
+                except Exception as ex:
+                    trace(2, "Invalid conversion {} {}: {}".format(col[4], def_ps, ex))
+                    continue
             if 'BaseName' in params.keys():
                 col[1] = get_property(params, 'BaseName')
             if 'Datatype' in params.keys():

@@ -316,3 +316,5 @@ not set table properties during refresh.
 | 1.66    | 04/26/22 | Fixed implementation of ADD DDL to work with timekey & truncate refresh |
 | 1.67    | 05/02/22 | Fixed multi-delete SQL |
 | 1.68    | 05/05/22 | Use derived columns in burst table,merge |
+| 1.69    | 05/20/22 | Burst table: removed drop if needs to be recreated<br>Removed describe called by target table creation<br>Throw error if incoming data has column not in target & adapt not configured |
+| 1.70    | 06/17/22 | Fixed precision and scale handling in create table, HVR6 |
