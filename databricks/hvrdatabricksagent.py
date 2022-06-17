@@ -332,7 +332,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.69"
+VERSION = "1.70"
 
 class FileStore:
     AWS_BUCKET  = 0
