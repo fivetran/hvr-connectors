@@ -84,6 +84,7 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 |   -d   | Name of the SoftDelete column.  Default is 'is_deleted'.  Set this option if the SoftDelete column is configured <br>with a name other than 'is_deleted'. |
 |   -D   | Name of the SoftDelete column.  Set this option if the SoftDelete column is in the target table. |
 |   -o   | Name of the {hvr_op} column.  Default is ‘op_type’.  Set this option if the name of the Extra column populated by <br>{hvr_op} is different than ‘op_type’. |
+|   -m   | If set, map NUMBER with prec <= 10 and scale = 0 to INTEGER |
 |   -n   | If set, the connector will apply inserts using INSERT SQL instead of MERGE |
 |   -O   | Name of the {hvr_op} column.   Set this option if the target table includes the Extra column. |
 |   -p   | Set this option if it is desired that the target is not truncated before the refresh. |
