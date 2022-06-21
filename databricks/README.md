@@ -328,3 +328,4 @@ not set table properties during refresh.
 | 1.68    | 05/05/22 | Use derived columns in burst table,merge |
 | 1.69    | 05/20/22 | Burst table: removed drop if needs to be recreated<br>Removed describe called by target table creation<br>Throw error if incoming data has column not in target & adapt not configured |
 | 1.70    | 06/17/22 | Fixed precision and scale handling in create table, HVR6 |
+| 1.71    | 06/21/22 | Optionally map NUMBER with prec <= 10 and scale=0 to INTEGER |
