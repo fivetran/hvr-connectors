@@ -86,7 +86,7 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 |   -o   | Name of the {hvr_op} column.  Default is ‘op_type’.  Set this option if the name of the Extra column populated by <br>{hvr_op} is different than ‘op_type’. |
 |   -n   | If set, the connector will apply inserts using INSERT SQL instead of MERGE |
 |   -O   | Name of the {hvr_op} column.   Set this option if the target table includes the Extra column. |
-|   -p   | Set this option on a refresh of a TimeKey target if it is desired that the target is not truncated before the refresh. |
+|   -p   | Set this option if it is desired that the target is not truncated before the refresh. |
 |   -r   | Set this option to instruct the script to create/recreate the target table during Refresh |
 |   -t   | Set this option if the target is TimeKey.   Same as using the Environment action HVR_DBRK_TIMEKEY=ON |
 |   -w   | Specify files in ADLS G2 to databricks using 'wasbs://' instead of 'abfss://' |
@@ -208,9 +208,19 @@ The connector can be configured to create/recreate the target table when refresh
 - The '-r' option is set in the AgentPlugin /UserArgument
 - The repository connection string is provided to the Agent Plugin via the HVR_DBRK_HVRCONNECT Environment action.
 
-To get the value for the HVR_DBRK_HVRCONNECT Environment action:
-1. In the GUI run Initialize to get the connection string.  For example, my MySQL hub's connection is:  '-uhvr/!{6mATRwyh}!' -h mysql '142.171.34.118~3308~mysql'
-2. Convert to base64 in any web converter.  
+If the connector is running in an HVR 6 install, the connection information consists of the URL, hubname, username and password, all separated by spaces.   For instance:
+
+    https://192.168.22.444:4340 hvrhub user password
+
+If the connector is running in an HVR 5 install, the easy way to get the connection information is by using the GUI.  If you run HVR Initialize, the GUI will display the command as it should be entered if run at the command line.  The format of the hvrinit command is "hvrinit <options> connect_string channel_name".  For instance, to run hvrinit against my Oracle repository to initilaize channel 'msq2orexp':
+
+    hvrinit -oj -h oracle 'hvrhub/!{Qf6QmNqX}!' msq2orexp
+
+If the channel that I am configuring with the hvrdatabricksagent.py plugin is named "msq2databrk", the connect string is:
+
+    -h oracle 'hvrhub/!{Qf6QmNqX}!' msq2databrk
+
+Once you have the respository connection string, convert it to a Base64 value using a Base64 encoder/decode on the internet.
 
 The connector retrieves the table description and all the ColumnProperites actions so that it can generate the same column description as HVR would.  If there are Contexts on the ColumnProperties actions, and if the Context is used for a refresh, the '-c <context>' option should be added to the UserArguments so that the connector knows which ColumnProperties actions to apply.
 

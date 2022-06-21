@@ -21,13 +21,14 @@
 #     -E <envvar>  - pass an environment variable
 #     -i <collist> - if '-r', these (Extra) columns are not in target
 #     -l           - downshift {hvr_tbl_name} in HVR_DBRK_EXTERNAL_LOC
+#     -m           - map NUMBER with prec<=10 and scale=0 to INTEGER
 #     -n - use INSERT for DML inserts insetad of MERGE.   This could improve 
 #          perofromance but potentially cause OOS after a refresh.  The MERGE 
 #          statement is Resilient.   Tables in Databricks do not have a UK.
 #     -o <name>    - name of the hvr_op column, default is 'op_type'
 #     -O <name>    - name of the hvr_op column, default is 'op_type'
 #                    if specified with "-O", the target table has this column
-#     -p - preserve target data during timekey refresh
+#     -p - preserve target data during refresh
 #     -r - create (re-create) tables during refresh    
 #     -t - target is timekey
 #     -x - if HVR6, bypass SSL certificate verification
@@ -315,6 +316,8 @@
 #                          Throw error if incoming data has column not in target & adapt not configured
 #     06/17/2022 RLR v1.70 Fixed precision/scale handling in create table, HVR6
 #                          Added support for ColumnProperties datatype match like [prec<=6 && scale=0]
+#     06/21/2022 RLR v1.71 Added an option (-m) that causes the connector to map an Oracle number
+#                          with precision <= 10 and scale=0 to INTEGER
 #
 ################################################################################
 import sys
@@ -332,7 +335,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.70"
+VERSION = "1.71"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -415,6 +418,7 @@ class Options:
     parallel_count = 0
     adapt_add_cols = False
     verify_ssl = True
+    number_to_integer = False
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -712,6 +716,8 @@ def trace_input():
         trace(3, "Use context '{}' when processing actions that apply to the table".format(options.context))
     if options.ignore_columns:
         trace(3, "These columns are not in the target table: {}".format(options.ignore_columns))
+    if options.number_to_integer:
+        trace(3, "Map NUMBER with precision <= 10 and scale = 0 to INTEGER")
     if options.recreate_tables_on_refresh and options.partition_columns:
         trace(3, "Define partitioning during create:")
         for tab,cols in options.partition_columns.items():
@@ -788,7 +794,7 @@ def process_args(argv):
     if len(cmdargs):
         try:
             list_args = cmdargs.split(" ");
-            opts, args = getopt.getopt(list_args,"c:d:D:E:i:lno:O:prtwxy")
+            opts, args = getopt.getopt(list_args,"c:d:D:E:i:lmno:O:prtwxy")
         except getopt.GetoptError:
             raise Exception("Error parsing command line arguments '" + cmdargs + "' due to invalid argument or invalid syntax")
     
@@ -812,6 +818,8 @@ def process_args(argv):
                 options.ignore_columns = arg.split(',')
             elif opt == '-l':
                 options.downshift_name = True
+            elif opt == '-m':
+                options.number_to_integer = True
             elif opt == '-n':
                 options.insert_after_merge_dels_and_upds = True
             elif opt == '-o':
@@ -1552,6 +1560,12 @@ def remove_identity(ctype):
             return ctype[:len(ctype)-9]
     return ctype
 
+def map_number_no_scale(precision):
+    if options.number_to_integer:
+        if int(precision) <= 10:
+            return 'INTEGER'
+    return 'DOUBLE'
+
 def get_decimal_type(dtype, precision, scale):
     p = s = 0
     if precision:
@@ -1598,7 +1612,7 @@ def databricks_datatype(col):
     if ctype in BLOB_TYPES:
         return 'BINARY'
     if ctype == 'number' and col[4] == '0':
-        return 'DOUBLE'
+        return map_number_no_scale(bp)
     if ctype == 'money (ingres)':
         return 'DECIMAL(14,2)'
     if ctype == 'money':
