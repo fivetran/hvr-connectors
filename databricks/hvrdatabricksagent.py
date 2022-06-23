@@ -106,8 +106,9 @@
 #     HVR_DBRK_EXTERNAL_LOC      (optional)
 #        If specified, and refresh with create table, create an external Delta table.
 #
-#     HVR_DBRK_BURST_EXTERNAL_LOC      (optional)
-#        If specified, create the burst table as an external table using this location.
+#     HVR_DBRK_UNMANAGED_BURST   (optional)
+#        If set to 'ON', create the burst table as external; location pointing to
+#        integrate staging folder.
 #
 #     HVR_DBRK_FILE_EXPR         (optional)
 #        The Integrate /RenameExpression if set
@@ -318,6 +319,7 @@
 #                          Added support for ColumnProperties datatype match like [prec<=6 && scale=0]
 #     06/21/2022 RLR v1.71 Added an option (-m) that causes the connector to map an Oracle number
 #                          with precision <= 10 and scale=0 to INTEGER
+#     06/23/2022 RLR v1.72 Re-implemented the unmanaged burst option
 #
 ################################################################################
 import sys
@@ -335,7 +337,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.71"
+VERSION = "1.72"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -419,6 +421,7 @@ class Options:
     adapt_add_cols = False
     verify_ssl = True
     number_to_integer = False
+    unmanaged_burst = False
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -564,6 +567,8 @@ def env_load():
         options.target_is_timekey = True
     if os.getenv('HVR_DBRK_ADAPT_DDL_ADD_COL', '').upper() == 'ON':
         options.adapt_add_cols = True
+    if os.getenv('HVR_DBRK_UNMANAGED_BURST', '').upper() == 'ON':
+        options.unmanaged_burst = True
     options.database = os.getenv('HVR_DBRK_DATABASE', '')
     tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES','')
     if tblproperties:
@@ -707,6 +712,8 @@ def trace_input():
         trace(3, "File format = '{}'".format(options.file_format))
     if options.file_pattern:
         trace(3, "File name elements: ({}) {}".format(options.tblname_in_file_pattern, options.file_pattern))
+    if options.unmanaged_burst:
+        trace(3, "Create burst table(s) as external tables, location integrate staging folder")
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
     if not options.verify_ssl:
         trace(3, "If HVR6, when connecting to the hub, skip SSL cert verification")
@@ -2353,10 +2360,10 @@ def files_found_in_filestore(table, file_list):
     trace(3, "File check: files_in_list = {}; files_not_in_list = {}".format(files_in_list,files_not_in_list))
     if files_in_list == 0:
         trace(1, "Skipping table {0}; no files in {1}".format(table, options.folder))
-        return False
+        return False, False
     if files_in_list < len(file_list):
         raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(options.folder, table))
-    return True
+    return True, (files_not_in_list == 0)
 
 def delete_files_from_filestore(file_list):
     if (options.filestore_ops & FileOps.DELETE) == 0:
@@ -2566,14 +2573,41 @@ def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
         trace(2, "burst_table_is_current: columns not in burst {}".format(all_columns))
         return False
 
-    if table_type:
+    if table_type and burst_table_name.endswith("__bur"):
         table_type.append(loc)
         if not check_target_table(burst_table_name, options.burst_external_loc, table_type):
             return False
 
     return True
 
-def create_burst_table(burst_table_name, columns, col_types, burst_columns, target_table, just_try):
+def define_burst_table(stage_table, columns, col_types, burst_columns):
+    stage_sql = ''
+    stage_sql += "CREATE TABLE {0} ".format(stage_table)
+    stage_sql += "("
+    for col in columns:
+        if col in col_types:
+            stage_sql += "`{0}` {1},".format(col, col_types[col])
+        else:
+            stage_sql += "`{0}` string,".format(col)
+    for col in burst_columns:
+        stage_sql += "`{0}` int,".format(col)
+    stage_sql = stage_sql[:-1]
+    stage_sql += ") using {} ".format(options.file_format)
+    if options.filestore == FileStore.AZURE_BLOB or (options.filestore == FileStore.ADLS_G2 and options.use_wasb):
+        stage_sql += " LOCATION 'wasbs://{0}@{1}.blob.core.windows.net/{2}'".format(options.container, options.resource, options.folder)
+    elif options.filestore == FileStore.ADLS_G2:
+        stage_sql += " LOCATION 'abfss://{0}@{1}.dfs.core.windows.net/{2}'".format(options.container, options.resource, options.folder)
+    else:
+        stage_sql += " LOCATION 's3://{0}/{1}' ".format(options.container, options.folder)
+    if options.file_format == 'csv':
+        if options.line_separator:
+            stage_sql += ' OPTIONS (header "true", delimiter "{}", lineSep "{}")'.format(options.delimiter, options.line_separator)
+        else:
+            stage_sql += ' OPTIONS (header "true", delimiter "{}")'.format(options.delimiter)
+    trace(1, "Creating unmanaged burst table {0}".format(stage_table))
+    execute_sql(stage_sql, 'Create')
+
+def create_burst_table(burst_table_name, columns, col_types, burst_columns, just_try):
     create_sql = "CREATE OR REPLACE TABLE {0} ".format(burst_table_name)
     create_sql += "("
     for col in columns:
@@ -3064,12 +3098,15 @@ def process_table(tab_entry, file_list, numrows):
     columns = tab_entry[2].split(",")
     burst_columns = []
     load_table = target_table
+    unmanaged_burst = options.unmanaged_burst
 
     t = [0,0,0,0,0,0]
     t[0] = timer()
     # if table already processed, then skip this table
-    if file_list and not files_found_in_filestore(tab_entry[1], file_list):
-        return
+    if file_list:
+        files_there, unmanaged_burst_ok = files_found_in_filestore(tab_entry[1], file_list)
+        if not files_there:
+            return
 
     t[1] = timer()
     use_burst_logic = options.mode == "integ_end" and not options.target_is_timekey
@@ -3123,20 +3160,30 @@ def process_table(tab_entry, file_list, numrows):
     if use_burst_logic:
         # Use the existing burst table if it matches
         # If using managed burst, always CREATE OR REPLACE to create or truncate the table
+        if unmanaged_burst:
+            if unmanaged_burst_ok:
+                load_table = target_table + "__umb"
+            else:
+                trace(1, "Disabling unmanaged burst for {}; extraneous files in {}/{}".format(tab_entry[1], options.container, options.folder))
+                unmanaged_burst = False
         if not target_cols or new_cols:
             use_existing_burst = False
         else:
             use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
         if use_existing_burst:
-            truncate_table(load_table)
+            if not unmanaged_burst:
+                truncate_table(load_table)
         else:
-            if not create_burst_table(load_table, columns, col_types, burst_columns, target_table, True):
-                drop_table(load_table)
-                create_burst_table(load_table, columns, col_types, burst_columns, target_table, False)
+            drop_table(load_table)
+            if unmanaged_burst:
+                define_burst_table(load_table, columns, col_types, burst_columns)
+            elif not create_burst_table(load_table, columns, col_types, burst_columns, True):
+                create_burst_table(load_table, columns, col_types, burst_columns, False)
 
     t[2] = timer()
 
-    copy_into_delta_table(load_table, columns, col_types, burst_columns, file_list)
+    if not unmanaged_burst:
+        copy_into_delta_table(load_table, columns, col_types, burst_columns, file_list)
     t[3] = timer()
 
     if use_burst_logic:
@@ -3152,11 +3199,17 @@ def process_table(tab_entry, file_list, numrows):
     t[5] = timer()
     trace(3, "All times: {0:.2f}:  {1:.2f} {2:.2f} {3:.2f} {4:.2f} {5:.2f}".format(t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3], t[5]-t[4]))
     if use_burst_logic:
-        trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
-                 " verify files: {3:.2f}s,"
-                 " create/truncate burst: {4:.2f}s,"
-                 " copy into burst: {5:.2f}s,"
-                 " merge into target: {6:.2f}s,".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
+        if unmanaged_burst:
+            trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
+                     " verify files: {3:.2f}s,"
+                     " check/create burst: {4:.2f}s,"
+                     " merge into target: {6:.2f}s,".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
+        else:
+            trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
+                     " verify files: {3:.2f}s,"
+                     " create/truncate burst: {4:.2f}s,"
+                     " copy into burst: {5:.2f}s,"
+                     " merge into target: {6:.2f}s,".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
     else:
         if options.mode == "refr_write_end":
             init_clause = ''
