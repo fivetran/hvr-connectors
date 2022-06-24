@@ -320,6 +320,7 @@
 #     06/21/2022 RLR v1.71 Added an option (-m) that causes the connector to map an Oracle number
 #                          with precision <= 10 and scale=0 to INTEGER
 #     06/23/2022 RLR v1.72 Re-implemented the unmanaged burst option
+#     06/24/2022 RLR v1.73 Fixed the "delete then merge" logic used for key col changes
 #
 ################################################################################
 import sys
@@ -337,7 +338,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.72"
+VERSION = "1.73"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2836,23 +2837,7 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     trace(1, "{0} multi-deletes in {1}".format(dml, target_table))
     execute_sql(sql, dml)
 
-def merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
-    if options.merge_delay:
-        trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
-        time.sleep(options.merge_delay)
-
-    skip_clause = 'AND m.{} != 0 '.format(options.optype)
-    if options.insert_after_merge_dels_and_upds:
-        skip_clause += ' AND m.{} != 1'.format(options.optype)
-    if multidelete_table(target_table):
-        do_multi_delete(burst_table, target_table, columns, keys)
-        skip_clause = ' AND m.{} != 8'.format(options.optype)
-
-    merge_keys = keys
-    for col in partition_cols:
-        if not col in merge_keys:
-            merge_keys.append(col)
-
+def get_merge_sql(burst_table, target_table, columns, merge_keys, skip_clause, include_deletes):
     merge_sql = "MERGE INTO {0} a USING (".format(target_table)
     merge_sql += " SELECT "
     for key in merge_keys:
@@ -2881,6 +2866,26 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
             merge_sql += "m.`{0}`,".format(col)
         merge_sql = merge_sql[:-1]
         merge_sql += ")"
+    return merge_sql
+
+def merge_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
+    if options.merge_delay:
+        trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
+        time.sleep(options.merge_delay)
+
+    skip_clause = 'AND m.{} != 0 '.format(options.optype)
+    if options.insert_after_merge_dels_and_upds:
+        skip_clause += ' AND m.{} != 1'.format(options.optype)
+    if multidelete_table(target_table):
+        do_multi_delete(burst_table, target_table, columns, keys)
+        skip_clause = ' AND m.{} != 8'.format(options.optype)
+
+    merge_keys = keys
+    for col in partition_cols:
+        if not col in merge_keys:
+            merge_keys.append(col)
+
+    merge_sql = get_merge_sql(burst_table, target_table, columns, merge_keys, skip_clause, include_deletes=True)
 
     trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
     if sql_succeeded(merge_sql, 'Merge', 'multiple source rows matched'):
@@ -2899,9 +2904,8 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
         trace(1, "Delete rows from {} where {}.{} == 0".format(target_table, burst_table, options.optype))
         execute_sql(delete_sql, 'Delete')
     delete_sql = "DELETE FROM {} WHERE {} = 0".format(burst_table, options.optype)
-    trace(1, "Delete from {} where {} == 0".format(burst_table, options.optype))
-    execute_sql(delete_sql, 'Delete')
-    trace(1, "Merging changes from {0} into {1}".format(burst_table, target_table))
+    merge_sql = get_merge_sql(burst_table, target_table, columns, merge_keys, skip_clause, include_deletes=False)
+    trace(1, "Merging non-delete changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
 def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
