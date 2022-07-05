@@ -333,3 +333,4 @@ not set table properties during refresh.
 | 1.71    | 06/21/22 | Optionally map NUMBER with prec <= 10 and scale=0 to INTEGER |
 | 1.72    | 06/23/22 | Re-implemented the unmanaged burst option |
 | 1.73    | 06/24/22 | Fixed the "delete then merge" logic used for key col changes |
+| 1.74    | 07/05/22 | Fixed unmanaged burst bug - COPY INTO step skipped on refresh |

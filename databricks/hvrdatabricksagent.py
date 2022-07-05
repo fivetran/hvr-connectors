@@ -321,6 +321,7 @@
 #                          with precision <= 10 and scale=0 to INTEGER
 #     06/23/2022 RLR v1.72 Re-implemented the unmanaged burst option
 #     06/24/2022 RLR v1.73 Fixed the "delete then merge" logic used for key col changes
+#     07/05/2022 RLR v1.74 Fixed unmanaged burst bug - COPY INTO step skipped on refresh
 #
 ################################################################################
 import sys
@@ -338,7 +339,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.73"
+VERSION = "1.74"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -3186,7 +3187,7 @@ def process_table(tab_entry, file_list, numrows):
 
     t[2] = timer()
 
-    if not unmanaged_burst:
+    if not use_burst_logic or not unmanaged_burst:
         copy_into_delta_table(load_table, columns, col_types, burst_columns, file_list)
     t[3] = timer()
 
