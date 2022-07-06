@@ -322,7 +322,7 @@
 #     06/23/2022 RLR v1.72 Re-implemented the unmanaged burst option
 #     06/24/2022 RLR v1.73 Fixed the "delete then merge" logic used for key col changes
 #     07/05/2022 RLR v1.74 Fixed unmanaged burst bug - COPY INTO step skipped on refresh
-#     07/06/2022 RLR v1.75 If unmanaged burst & derived partition columns, don't use derived partition cols
+#     07/06/2022 RLR v1.75 If unmanaged burst & derived partition columns, don't use unmanaged burst
 #
 ################################################################################
 import sys
@@ -2369,7 +2369,7 @@ def files_found_in_filestore(table, file_list):
         return False, False
     if files_in_list < len(file_list):
         raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(options.folder, table))
-    return True, (files_not_in_list == 0)
+    return True, files_not_in_list
 
 def delete_files_from_filestore(file_list):
     if (options.filestore_ops & FileOps.DELETE) == 0:
@@ -2527,15 +2527,6 @@ def new_source_columns(columns, target_cols, derived_target_cols, target_table, 
         schema = options.database + '.'
     print("Table `{}{}` altered; added column(s) {}".format(schema, target_table, new_cols))
     return new_cols
-
-def remove_derived_columns(columns, partition_cols, derived_target_cols):
-    if len(derived_target_cols):
-        trace(1, "Using unmanaged burst table, cannot use derived partition columns")
-    for dcol in derived_target_cols:
-        if dcol in columns:
-            columns.remove(dcol)
-        if dcol in partition_cols:
-            partition_cols.remove(dcol)
 
 def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
     all_columns = columns.copy()
@@ -3122,7 +3113,7 @@ def process_table(tab_entry, file_list, numrows):
     t[0] = timer()
     # if table already processed, then skip this table
     if file_list:
-        files_there, unmanaged_burst_ok = files_found_in_filestore(tab_entry[1], file_list)
+        files_there, extra_files_at_loc = files_found_in_filestore(tab_entry[1], file_list)
         if not files_there:
             return
 
@@ -3179,17 +3170,18 @@ def process_table(tab_entry, file_list, numrows):
         # Use the existing burst table if it matches
         # If using managed burst, always CREATE OR REPLACE to create or truncate the table
         if unmanaged_burst:
-            if unmanaged_burst_ok:
-                load_table = target_table + UNMANAGED_BURST_SUFFIX
-            else:
+            if extra_files_at_loc:
                 trace(1, "Disabling unmanaged burst for {}; extraneous files in {}/{}".format(tab_entry[1], options.container, options.folder))
                 unmanaged_burst = False
+            elif len(derived_targ_cols):
+                trace(1, "Disabling unmanaged burst for {}; target table has derived partition columns".format(tab_entry[1]))
+                unmanaged_burst = False
+            else:
+                load_table = target_table + UNMANAGED_BURST_SUFFIX
         if not target_cols or new_cols:
             use_existing_burst = False
         else:
             use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
-        if unmanaged_burst:
-            remove_derived_columns(columns, partition_cols, derived_targ_cols)
         if use_existing_burst:
             if not unmanaged_burst:
                 truncate_table(load_table)

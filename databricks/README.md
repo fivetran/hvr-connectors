@@ -334,4 +334,4 @@ not set table properties during refresh.
 | 1.72    | 06/23/22 | Re-implemented the unmanaged burst option |
 | 1.73    | 06/24/22 | Fixed the "delete then merge" logic used for key col changes |
 | 1.74    | 07/05/22 | Fixed unmanaged burst bug - COPY INTO step skipped on refresh |
-| 1.75    | 07/06/22 | If unmanaged burst & derived partition columns, don't use derived partition cols |
+| 1.75    | 07/06/22 | If unmanaged burst & derived partition columns, don't use unmanaged burst |
