@@ -322,6 +322,7 @@
 #     06/23/2022 RLR v1.72 Re-implemented the unmanaged burst option
 #     06/24/2022 RLR v1.73 Fixed the "delete then merge" logic used for key col changes
 #     07/05/2022 RLR v1.74 Fixed unmanaged burst bug - COPY INTO step skipped on refresh
+#     07/06/2022 RLR v1.75 If unmanaged burst & derived partition columns, don't use derived partition cols
 #
 ################################################################################
 import sys
@@ -339,7 +340,10 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.74"
+VERSION = "1.75"
+
+DELTA_BURST_SUFFIX     = "__bur"
+UNMANAGED_BURST_SUFFIX = "__umb"
 
 class FileStore:
     AWS_BUCKET  = 0
@@ -2524,6 +2528,15 @@ def new_source_columns(columns, target_cols, derived_target_cols, target_table, 
     print("Table `{}{}` altered; added column(s) {}".format(schema, target_table, new_cols))
     return new_cols
 
+def remove_derived_columns(columns, partition_cols, derived_target_cols):
+    if len(derived_target_cols):
+        trace(1, "Using unmanaged burst table, cannot use derived partition columns")
+    for dcol in derived_target_cols:
+        if dcol in columns:
+            columns.remove(dcol)
+        if dcol in partition_cols:
+            partition_cols.remove(dcol)
+
 def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
     all_columns = columns.copy()
     all_types = col_types.copy()
@@ -2575,7 +2588,7 @@ def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
         trace(2, "burst_table_is_current: columns not in burst {}".format(all_columns))
         return False
 
-    if table_type and burst_table_name.endswith("__bur"):
+    if table_type and burst_table_name.endswith(DELTA_BURST_SUFFIX):
         table_type.append(loc)
         if not check_target_table(burst_table_name, options.burst_external_loc, table_type):
             return False
@@ -3116,7 +3129,7 @@ def process_table(tab_entry, file_list, numrows):
     t[1] = timer()
     use_burst_logic = options.mode == "integ_end" and not options.target_is_timekey
     if use_burst_logic:
-        load_table += '__bur'
+        load_table += DELTA_BURST_SUFFIX
         if options.no_optype_on_target:
             burst_columns.append(options.optype)
         if options.no_isdeleted_on_target:
@@ -3167,7 +3180,7 @@ def process_table(tab_entry, file_list, numrows):
         # If using managed burst, always CREATE OR REPLACE to create or truncate the table
         if unmanaged_burst:
             if unmanaged_burst_ok:
-                load_table = target_table + "__umb"
+                load_table = target_table + UNMANAGED_BURST_SUFFIX
             else:
                 trace(1, "Disabling unmanaged burst for {}; extraneous files in {}/{}".format(tab_entry[1], options.container, options.folder))
                 unmanaged_burst = False
@@ -3175,6 +3188,8 @@ def process_table(tab_entry, file_list, numrows):
             use_existing_burst = False
         else:
             use_existing_burst = burst_table_is_current(load_table, columns, col_types, burst_columns)
+        if unmanaged_burst:
+            remove_derived_columns(columns, partition_cols, derived_targ_cols)
         if use_existing_burst:
             if not unmanaged_burst:
                 truncate_table(load_table)
