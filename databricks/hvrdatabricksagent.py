@@ -323,6 +323,7 @@
 #     06/24/2022 RLR v1.73 Fixed the "delete then merge" logic used for key col changes
 #     07/05/2022 RLR v1.74 Fixed unmanaged burst bug - COPY INTO step skipped on refresh
 #     07/06/2022 RLR v1.75 If unmanaged burst & derived partition columns, don't use unmanaged burst
+#     07/12/2022 RLR v1.76 Added tracing of the REST calls to get info from the repo
 #
 ################################################################################
 import sys
@@ -340,7 +341,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.75"
+VERSION = "1.76"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -1416,6 +1417,7 @@ class Client:
 
     def get(self, path, query, headers, payload, is_json):
         headers.update(self.header_auth(self.login_token()))
+        trace(3, "{} {} ".format(self.uri + path, query))
         rq = requests.get(
             self.uri + path,
             params=query,
@@ -1437,11 +1439,13 @@ class Client:
         )
 
 def get6_table(tablename):
+    trace(3, "Fetch columns for table: hub={} chn={} tbl={}".format(options.hub, options.channel, tablename))
     ret = Connections.hvr6.get("/api/latest/hubs/{hub}/definition/channels/{channel}/tables/{table}".format(
          hub=options.hub, channel=options.channel, table=tablename), {'fetch':'cols'}, {}, None, True)
     return ret
 
 def get6_location_groups():
+    trace(3, "Fetch members for location groups: hub={} chn={}".format(options.hub, options.channel))
     ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/loc_groups".format(
          options.hub, options.channel), {'fetch':'members'}, {}, None, True)
     groups = {}
@@ -1450,12 +1454,14 @@ def get6_location_groups():
     return groups
 
 def get6_table_properties():
+    trace(3, "Fetch TableProperties actions: hub={} chn={}".format(options.hub, options.channel))
     query = {'action_type':'TableProperties'}
     ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/actions".format(
          options.hub, options.channel), query, {}, None, True)
     return ret
 
 def get6_column_properties():
+    trace(3, "Fetch ColumnProperties actions: hub={} chn={}".format(options.hub, options.channel))
     query = {'action_type':'ColumnProperties'}
     ret = Connections.hvr6.get("/api/latest/hubs/{}/definition/channels/{}/actions".format(
          options.hub, options.channel), query, {}, None, True)

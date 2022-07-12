@@ -335,3 +335,4 @@ not set table properties during refresh.
 | 1.73    | 06/24/22 | Fixed the "delete then merge" logic used for key col changes |
 | 1.74    | 07/05/22 | Fixed unmanaged burst bug - COPY INTO step skipped on refresh |
 | 1.75    | 07/06/22 | If unmanaged burst & derived partition columns, don't use unmanaged burst |
+| 1.76    | 07/12/22 | Added tracing of the REST calls to get info from the repo |
