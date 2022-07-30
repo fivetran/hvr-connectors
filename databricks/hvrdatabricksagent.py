@@ -324,6 +324,7 @@
 #     07/05/2022 RLR v1.74 Fixed unmanaged burst bug - COPY INTO step skipped on refresh
 #     07/06/2022 RLR v1.75 If unmanaged burst & derived partition columns, don't use unmanaged burst
 #     07/12/2022 RLR v1.76 Added tracing of the REST calls to get info from the repo
+#     07/28/2022 RLR v1.77 Added support for sliced refresh HVR 6
 #
 ################################################################################
 import sys
@@ -341,7 +342,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.76"
+VERSION = "1.77"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -372,6 +373,7 @@ class RefreshOptions:
 class Options:
     hvr_home = ''
     hvr_config = ''
+    hvr_tmp = '/tmp'
     hvr_6 = False
     hub = ''
     mode = ''
@@ -620,7 +622,10 @@ def env_load():
         slice_num = os.getenv('HVR_VAR_SLICE_NUM', '')
         if not num_slices or not slice_num:
             raise Exception("Script must be run as part of a sliced refresh job; HVR_VAR_SLICE_TOTAL and/or HVR_VAR_SLICE_NUM missing")
-        basepath= os.path.join(options.hvr_config, "files")
+        if options.hvr_6:
+            basepath= options.hvr_tmp
+        else:
+            basepath= os.path.join(options.hvr_config, "files")
         refresh_options.lock_file = os.path.join(basepath, refresh_options.job_name+'.lock')
         refresh_options.done_file = os.path.join(basepath, refresh_options.job_name+'.done')
         try:
@@ -796,6 +801,7 @@ def process_args(argv):
     options.hvr_config = os.getenv('HVR_CONFIG', '')
     if not options.hvr_config:
         raise Exception("$HVR_CONFIG must be defined")
+    options.hvr_tmp = os.getenv('HVR_TMP', '/tmp')
     options.hvr_6 = check_hvr6()
 
     tracing = 0
@@ -877,13 +883,14 @@ def cleanup_lock_file():
             pass
 
 def cleanup_job_files():
+    trace(1, "Cleanup sliced refresh job files")
     cleanup_lock_file()
-    if options.trace < 5:
-        try:
-            if os.path.exists(refresh_options.done_file):
-                os.remove(refresh_options.done_file)
-        except():
-            pass
+    try:
+        if os.path.exists(refresh_options.done_file):
+            trace(0, "RLR remove {}".format(refresh_options.done_file))
+            os.remove(refresh_options.done_file)
+    except():
+        pass
 
 def lock(lockfile):
     trace(1, "Lock {}".format(lockfile))
@@ -917,6 +924,12 @@ def unlock(lockfile):
     trace(2, "File {} exists? {}".format(lockfile, os.path.exists(lockfile)))
 
 def check_donefile(donefile):
+    if os.path.exists(donefile):
+        with open(refresh_options.done_file, "r+") as f:
+            done_str = f.readline()
+            if len(done_str) != refresh_options.num_slices:
+                print("Processing sliced refresh with {} slices, existing done file is for {} slices, will reset".format(refresh_options.num_slices, len(done_str)))
+                os.remove(donefile)
     if not os.path.exists(donefile):
         with open(donefile, "w") as f:
             done_str = '0' * refresh_options.num_slices
