@@ -74,6 +74,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
 | HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
+| HVR_DBRK_UNMANAGED_BURST   |     No    | If 'ON', create burst table as external |
 
 ## UserArgument options
 The following options may be set in the /UserArguments of the AgentPlugin action for hvrdatabricksagent.py
@@ -330,3 +331,9 @@ not set table properties during refresh.
 | 1.69    | 05/20/22 | Burst table: removed drop if needs to be recreated<br>Removed describe called by target table creation<br>Throw error if incoming data has column not in target & adapt not configured |
 | 1.70    | 06/17/22 | Fixed precision and scale handling in create table, HVR6 |
 | 1.71    | 06/21/22 | Optionally map NUMBER with prec <= 10 and scale=0 to INTEGER |
+| 1.72    | 06/23/22 | Re-implemented the unmanaged burst option |
+| 1.73    | 06/24/22 | Fixed the "delete then merge" logic used for key col changes |
+| 1.74    | 07/05/22 | Fixed unmanaged burst bug - COPY INTO step skipped on refresh |
+| 1.75    | 07/06/22 | If unmanaged burst & derived partition columns, don't use unmanaged burst |
+| 1.76    | 07/12/22 | Added tracing of the REST calls to get info from the repo |
+| 1.77    | 07/29/22 | Added support for sliced refresh HVR 6 |
