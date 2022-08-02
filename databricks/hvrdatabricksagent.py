@@ -146,6 +146,8 @@
 #     HVR_DBRK_TARGET_NAMES      (optional)
 #        Can be used to define the target table name.  Format is:
 #           hvr_tbl_name=<name>[:hvr_tbl_name=<name>]...
+#        The script supports environment variables named HVR_DBRK_TARGET_NAMES_[*] where
+#        [*] indicates any substring.
 #
 #     HVR_DBRK_PARALLEL          (optional)
 #        If set, and if running on a POSIX OS, the tables will be processed in parallel.
@@ -325,6 +327,7 @@
 #     07/06/2022 RLR v1.75 If unmanaged burst & derived partition columns, don't use unmanaged burst
 #     07/12/2022 RLR v1.76 Added tracing of the REST calls to get info from the repo
 #     07/28/2022 RLR v1.77 Added support for sliced refresh HVR 6
+#     08/02/2022 RLR v1.78 Support multiple instances of HVR_DBRK_TARGET_NAMES
 #
 ################################################################################
 import sys
@@ -342,7 +345,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.77"
+VERSION = "1.78"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -519,6 +522,16 @@ def load_agent_env():
 
     return agent_env
 
+def load_target_names(env_var, env_val):
+    targetnames = os.getenv(env_var, '').split(':')
+    for targetname in targetnames:
+        if not '=' in targetname:
+            raise Exception("Format of {} is hvr_tbl_name=<target table name>:...", env_var)
+        sep = targetname.find('=')
+        if targetname[:sep] in options.target_names.keys():
+            raise Exception("Target name defined twice for {}".format(targetname[:sep]))
+        options.target_names[targetname[:sep]] = targetname[sep+1:]
+
 def env_load():
     options.trace = int(os.getenv('HVR_DBRK_TRACE', options.trace))
     file_format = os.getenv('HVR_DBRK_FILEFORMAT', 'csv')
@@ -585,17 +598,12 @@ def env_load():
             options.set_tblproperties = ''
         else:
             options.set_tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES')
-    if os.getenv('HVR_DBRK_TARGET_NAMES', ''):
-        targetnames = os.getenv('HVR_DBRK_TARGET_NAMES', '').split(':')
-        for targetname in targetnames:
-            if not '=' in targetname:
-                raise Exception("Format of HVR_DBRK_TARGET_NAMES is hvr_tbl_name=<target table name>:...")
-            sep = targetname.find('=')
-            if targetname[:sep] in options.target_names.keys():
-                raise Exception("Target name defined twice for {}".format(targetname[:sep]))
-            options.target_names[targetname[:sep]] = targetname[sep+1:]
     options.agent_env = load_agent_env()
     get_multidelete_map()
+
+    for envname, value in os.environ.items():
+        if envname.startswith('HVR_DBRK_TARGET_NAMES'):
+            load_target_names(envname, value)
 
     for envname, value in os.environ.items():
         if envname.startswith('HVR_DBRK_PARTITION_'):

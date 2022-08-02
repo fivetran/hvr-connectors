@@ -337,3 +337,4 @@ not set table properties during refresh.
 | 1.75    | 07/06/22 | If unmanaged burst & derived partition columns, don't use unmanaged burst |
 | 1.76    | 07/12/22 | Added tracing of the REST calls to get info from the repo |
 | 1.77    | 07/29/22 | Added support for sliced refresh HVR 6 |
+| 1.78    | 08/02/22 | Support multiple instances of HVR_DBRK_TARGET_NAMES |
