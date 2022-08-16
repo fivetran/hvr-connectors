@@ -338,3 +338,4 @@ not set table properties during refresh.
 | 1.76    | 07/12/22 | Added tracing of the REST calls to get info from the repo |
 | 1.77    | 07/29/22 | Added support for sliced refresh HVR 6 |
 | 1.78    | 08/02/22 | Support multiple instances of HVR_DBRK_TARGET_NAMES |
+| 1.79    | 08/16/22 | In data type mapping decimal(2,6) = decimal(2,2) on the target |

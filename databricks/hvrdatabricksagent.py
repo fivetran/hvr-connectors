@@ -328,6 +328,7 @@
 #     07/12/2022 RLR v1.76 Added tracing of the REST calls to get info from the repo
 #     07/28/2022 RLR v1.77 Added support for sliced refresh HVR 6
 #     08/02/2022 RLR v1.78 Support multiple instances of HVR_DBRK_TARGET_NAMES
+#     08/16/2022 RLR v1.79 In data type mapping decimal(2,6) = decimal(2,2) on the target
 #
 ################################################################################
 import sys
@@ -345,7 +346,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.78"
+VERSION = "1.79"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -1617,6 +1618,8 @@ def get_decimal_type(dtype, precision, scale):
             s = 0
     if p > 38 or s > 37:
         return 'DOUBLE'
+    if s > p:
+        s = p
     return 'DECIMAL({},{})'.format(p,s)
 
 def databricks_datatype(col):
