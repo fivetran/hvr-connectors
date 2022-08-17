@@ -71,6 +71,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_DBRK_PARALLEL          |     No    | If set, and if running on a POSIX system, process tables in parallel |
 | HVR_DBRK_PARTITION_table   |     No    | If set, target table is created with partitions columns |
 | HVR_DBRK_REFRESH_RESTRICT  |     No    | If set, and refresh, delete rows matching this condition instead of truncating |
+| HVR_DBRK_SKIP_TABLES       |     No    | Comma separated list of tables.  These tables will NOT be processed |
 | HVR_DBRK_SLICE_REFRESH_ID  |     No    | Should be set by hvrslicedrefresh.py.  If set connector runs sliced refresh logic |
 | HVR_DBRK_TBLPROPERTIES     |     No    | If set, the connector will set these table properties during refresh |
 | HVR_DBRK_TIMEKEY           |     No    | Set to 'ON' if the target table is Timekey  |
@@ -339,3 +340,4 @@ not set table properties during refresh.
 | 1.77    | 07/29/22 | Added support for sliced refresh HVR 6 |
 | 1.78    | 08/02/22 | Support multiple instances of HVR_DBRK_TARGET_NAMES |
 | 1.79    | 08/16/22 | In data type mapping decimal(2,6) = decimal(2,2) on the target |
+| 1.80    | 08/17/22 | Added HVR_DBRK_SKIP_TABLES |
