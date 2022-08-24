@@ -334,6 +334,7 @@
 #     08/02/2022 RLR v1.78 Support multiple instances of HVR_DBRK_TARGET_NAMES
 #     08/16/2022 RLR v1.79 In data type mapping decimal(2,6) = decimal(2,2) on the target
 #     08/17/2022 RLR v1.80 Added HVR_DBRK_SKIP_TABLES
+#     08/24/2022 RLR v1.81 Don't drop the burst table before recreate due to schema change
 #
 ################################################################################
 import sys
@@ -351,7 +352,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.80"
+VERSION = "1.81"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -3232,8 +3233,8 @@ def process_table(tab_entry, file_list, numrows):
             if not unmanaged_burst:
                 truncate_table(load_table)
         else:
-            drop_table(load_table)
             if unmanaged_burst:
+                drop_table(load_table)
                 define_burst_table(load_table, columns, col_types, burst_columns)
             elif not create_burst_table(load_table, columns, col_types, burst_columns, True):
                 create_burst_table(load_table, columns, col_types, burst_columns, False)

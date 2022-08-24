@@ -341,3 +341,4 @@ not set table properties during refresh.
 | 1.78    | 08/02/22 | Support multiple instances of HVR_DBRK_TARGET_NAMES |
 | 1.79    | 08/16/22 | In data type mapping decimal(2,6) = decimal(2,2) on the target |
 | 1.80    | 08/17/22 | Added HVR_DBRK_SKIP_TABLES |
+| 1.81    | 08/24/22 | Don't drop the burst table before recreate due to schema change |
