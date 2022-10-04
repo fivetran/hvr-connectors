@@ -335,6 +335,7 @@
 #     08/16/2022 RLR v1.79 In data type mapping decimal(2,6) = decimal(2,2) on the target
 #     08/17/2022 RLR v1.80 Added HVR_DBRK_SKIP_TABLES
 #     08/24/2022 RLR v1.81 Don't drop the burst table before recreate due to schema change
+#     10/03/2022 RLR v1.82 Add NOT NULL constraint when create tabel if repo indicates not nullable
 #
 ################################################################################
 import sys
@@ -352,7 +353,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.81"
+VERSION = "1.82"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -908,7 +909,6 @@ def cleanup_job_files():
     cleanup_lock_file()
     try:
         if os.path.exists(refresh_options.done_file):
-            trace(0, "RLR remove {}".format(refresh_options.done_file))
             os.remove(refresh_options.done_file)
     except():
         pass
@@ -1559,7 +1559,7 @@ def hvr6_get_table_info(tablename, just_these_cols = []):
                             charlen += ','
                         charlen += str(aval)
                         column[4] = charlen
-                    if akey == "nullable" and aval == "true":
+                    if akey == "nullable" and aval == True:
                         column[5] = '1'
     if column:
         target_columns.append(column)
@@ -1721,6 +1721,8 @@ def target_create_table(hvr_table, table, columns):
     sep = ' '
     for col in columns:
         create_sql += "{} `{}` {}".format(sep, col[1], databricks_datatype(col))
+        if col[5] == '0':
+            create_sql += " NOT NULL"
         sep = ','
     create_sql += ") USING DELTA"
     if options.external_loc:
@@ -3078,15 +3080,17 @@ def extract_missing_col(error_message):
 
 def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list, skip_cols, do_try):
     trace(2, "Do COPY INTO SQL for {}, columns {}, skip {}, try {}".format(load_table, columns, skip_cols, do_try))
+    trace(2, "                    column types {}".format(col_types))
+    trace(2, "                   burst columns {}".format(burst_columns))
     copy_sql = ''
     copy_sql += "COPY INTO {0} FROM ".format(load_table)
     copy_sql += "(SELECT "
     for col in columns:
         if col in skip_cols:
             continue
-        if 'GENERATED ALWAYS AS' in col_types[col]:
-            continue
         if col in col_types:
+            if 'GENERATED ALWAYS AS' in col_types[col]:
+                continue
             type_func = col_types[col]
             if '(' in type_func:
                 copy_sql += "CAST(`{0}` as {1}),".format(col, type_func)
