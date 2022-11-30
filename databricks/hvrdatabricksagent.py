@@ -336,6 +336,7 @@
 #     08/17/2022 RLR v1.80 Added HVR_DBRK_SKIP_TABLES
 #     08/24/2022 RLR v1.81 Don't drop the burst table before recreate due to schema change
 #     10/03/2022 RLR v1.82 Add NOT NULL constraint when create tabel if repo indicates not nullable
+#     11/30/2022 RLR v1.83 Fixed abort when processing derived columns
 #
 ################################################################################
 import sys
@@ -353,7 +354,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.82"
+VERSION = "1.83"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -2786,8 +2787,6 @@ def check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_col
                 col_list.append(colname)
                 col_types[colname] = coltype
                 part_cols.append(colname)
-            else:
-                xtra_part_cols.remove(colname)
     return col_list, col_types, part_cols, xtra_part_cols
 
 def parse_derived_spec(line):
