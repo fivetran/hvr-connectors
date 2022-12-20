@@ -100,6 +100,10 @@
 #        only for Azure filestore where HVR_DBRK_FILE_EXPR is defined and the folder defined
 #        in HVR_DBRK_FILE_EXPR includes {hvr_tbl_name}.
 #
+#     HVR_DBRK_SKIP_TABLES       (optional)
+#        If set, don't process the named tables.  Useful if a table is removed from replication
+#        and integrate still calls this script with that table's info. Comma separated list.
+#
 #     HVR_DBRK_TIMEKEY           (optional)
 #        If set to 'ON', changes are appended to target
 #
@@ -146,6 +150,8 @@
 #     HVR_DBRK_TARGET_NAMES      (optional)
 #        Can be used to define the target table name.  Format is:
 #           hvr_tbl_name=<name>[:hvr_tbl_name=<name>]...
+#        The script supports environment variables named HVR_DBRK_TARGET_NAMES_[*] where
+#        [*] indicates any substring.
 #
 #     HVR_DBRK_PARALLEL          (optional)
 #        If set, and if running on a POSIX OS, the tables will be processed in parallel.
@@ -325,6 +331,12 @@
 #     07/06/2022 RLR v1.75 If unmanaged burst & derived partition columns, don't use unmanaged burst
 #     07/12/2022 RLR v1.76 Added tracing of the REST calls to get info from the repo
 #     07/28/2022 RLR v1.77 Added support for sliced refresh HVR 6
+#     08/02/2022 RLR v1.78 Support multiple instances of HVR_DBRK_TARGET_NAMES
+#     08/16/2022 RLR v1.79 In data type mapping decimal(2,6) = decimal(2,2) on the target
+#     08/17/2022 RLR v1.80 Added HVR_DBRK_SKIP_TABLES
+#     08/24/2022 RLR v1.81 Don't drop the burst table before recreate due to schema change
+#     10/03/2022 RLR v1.82 Add NOT NULL constraint when create tabel if repo indicates not nullable
+#     11/30/2022 RLR v1.83 Fixed abort when processing derived columns
 #
 ################################################################################
 import sys
@@ -342,7 +354,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.77"
+VERSION = "1.83"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -431,6 +443,7 @@ class Options:
     verify_ssl = True
     number_to_integer = False
     unmanaged_burst = False
+    skip_tables= []
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -519,6 +532,16 @@ def load_agent_env():
 
     return agent_env
 
+def load_target_names(env_var, env_val):
+    targetnames = os.getenv(env_var, '').split(':')
+    for targetname in targetnames:
+        if not '=' in targetname:
+            raise Exception("Format of {} is hvr_tbl_name=<target table name>:...", env_var)
+        sep = targetname.find('=')
+        if targetname[:sep] in options.target_names.keys():
+            raise Exception("Target name defined twice for {}".format(targetname[:sep]))
+        options.target_names[targetname[:sep]] = targetname[sep+1:]
+
 def env_load():
     options.trace = int(os.getenv('HVR_DBRK_TRACE', options.trace))
     file_format = os.getenv('HVR_DBRK_FILEFORMAT', 'csv')
@@ -542,6 +565,9 @@ def env_load():
             options.load_burst_delay = float(burst_delay)
         except Exception as err:
             print("Invalid value '{}' defined for HVR_DBRK_LOAD_BURST_DELAY; must be numeric".format(burst_delay))
+    skip_tables = os.getenv('HVR_DBRK_SKIP_TABLES', '')
+    if skip_tables:
+        options.skip_tables = skip_tables.split(',')
     merge_delay = os.getenv('HVR_DBRK_MERGE_DELAY', '')
     if merge_delay:
         try:
@@ -585,17 +611,12 @@ def env_load():
             options.set_tblproperties = ''
         else:
             options.set_tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES')
-    if os.getenv('HVR_DBRK_TARGET_NAMES', ''):
-        targetnames = os.getenv('HVR_DBRK_TARGET_NAMES', '').split(':')
-        for targetname in targetnames:
-            if not '=' in targetname:
-                raise Exception("Format of HVR_DBRK_TARGET_NAMES is hvr_tbl_name=<target table name>:...")
-            sep = targetname.find('=')
-            if targetname[:sep] in options.target_names.keys():
-                raise Exception("Target name defined twice for {}".format(targetname[:sep]))
-            options.target_names[targetname[:sep]] = targetname[sep+1:]
     options.agent_env = load_agent_env()
     get_multidelete_map()
+
+    for envname, value in os.environ.items():
+        if envname.startswith('HVR_DBRK_TARGET_NAMES'):
+            load_target_names(envname, value)
 
     for envname, value in os.environ.items():
         if envname.startswith('HVR_DBRK_PARTITION_'):
@@ -727,6 +748,8 @@ def trace_input():
     if options.unmanaged_burst:
         trace(3, "Create burst table(s) as external tables, location integrate staging folder")
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
+    if options.skip_tables:
+        trace(3, "The tables {} will not be processed".format(options.skip_tables))
     if not options.verify_ssl:
         trace(3, "If HVR6, when connecting to the hub, skip SSL cert verification")
     if options.adapt_add_cols:
@@ -887,7 +910,6 @@ def cleanup_job_files():
     cleanup_lock_file()
     try:
         if os.path.exists(refresh_options.done_file):
-            trace(0, "RLR remove {}".format(refresh_options.done_file))
             os.remove(refresh_options.done_file)
     except():
         pass
@@ -1538,7 +1560,7 @@ def hvr6_get_table_info(tablename, just_these_cols = []):
                             charlen += ','
                         charlen += str(aval)
                         column[4] = charlen
-                    if akey == "nullable" and aval == "true":
+                    if akey == "nullable" and aval == True:
                         column[5] = '1'
     if column:
         target_columns.append(column)
@@ -1609,6 +1631,8 @@ def get_decimal_type(dtype, precision, scale):
             s = 0
     if p > 38 or s > 37:
         return 'DOUBLE'
+    if s > p:
+        s = p
     return 'DECIMAL({},{})'.format(p,s)
 
 def databricks_datatype(col):
@@ -1698,6 +1722,8 @@ def target_create_table(hvr_table, table, columns):
     sep = ' '
     for col in columns:
         create_sql += "{} `{}` {}".format(sep, col[1], databricks_datatype(col))
+        if col[5] == '0':
+            create_sql += " NOT NULL"
         sep = ','
     create_sql += ") USING DELTA"
     if options.external_loc:
@@ -2085,21 +2111,26 @@ def table_file_name_map():
         num_rows[item] = 0
         if files:
             pop_list = []
+            file_count = 0
             for idx, f in enumerate(files):
                 if file_for_table(item[1], f, suffix):
-                    file_path = prefix_directory(f)
-                    tbl_map[item].append(file_path)
                     pop_list.append(idx)
-                    try:
-                        num_rows[item] += int(rows[idx])
-                    except:
-                        pass
+                    file_count += 1
+                    if item[1] in options.skip_tables:
+                        trace(0, "Skipping table {} due to HVR_DBRK_SKIP_TABLES".format(item[1]))
+                    else:
+                        file_path = prefix_directory(f)
+                        tbl_map[item].append(file_path)
+                        try:
+                            num_rows[item] += int(rows[idx])
+                        except:
+                            pass
             # Pop files from list from high index to low to maintain index sanity
             for idx in reversed(pop_list):
                 files.pop(idx)
                 if rows:
                     rows.pop(idx)
-            total_files += len(tbl_map[item])
+            total_files += file_count
 
     if options.parallel_count:
         file_counter = total_files
@@ -2756,8 +2787,6 @@ def check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_col
                 col_list.append(colname)
                 col_types[colname] = coltype
                 part_cols.append(colname)
-            else:
-                xtra_part_cols.remove(colname)
     return col_list, col_types, part_cols, xtra_part_cols
 
 def parse_derived_spec(line):
@@ -3050,15 +3079,17 @@ def extract_missing_col(error_message):
 
 def do_copy_into_sql(load_table, columns, col_types, burst_columns, file_list, skip_cols, do_try):
     trace(2, "Do COPY INTO SQL for {}, columns {}, skip {}, try {}".format(load_table, columns, skip_cols, do_try))
+    trace(2, "                    column types {}".format(col_types))
+    trace(2, "                   burst columns {}".format(burst_columns))
     copy_sql = ''
     copy_sql += "COPY INTO {0} FROM ".format(load_table)
     copy_sql += "(SELECT "
     for col in columns:
         if col in skip_cols:
             continue
-        if 'GENERATED ALWAYS AS' in col_types[col]:
-            continue
         if col in col_types:
+            if 'GENERATED ALWAYS AS' in col_types[col]:
+                continue
             type_func = col_types[col]
             if '(' in type_func:
                 copy_sql += "CAST(`{0}` as {1}),".format(col, type_func)
@@ -3205,8 +3236,8 @@ def process_table(tab_entry, file_list, numrows):
             if not unmanaged_burst:
                 truncate_table(load_table)
         else:
-            drop_table(load_table)
             if unmanaged_burst:
+                drop_table(load_table)
                 define_burst_table(load_table, columns, col_types, burst_columns)
             elif not create_burst_table(load_table, columns, col_types, burst_columns, True):
                 create_burst_table(load_table, columns, col_types, burst_columns, False)
