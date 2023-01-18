@@ -344,3 +344,4 @@ not set table properties during refresh.
 | 1.81    | 08/24/22 | Don't drop the burst table before recreate due to schema change |
 | 1.82    | 10/03/22 | Add NOT NULL constraint when create tabel if repo indicates not nullable |
 | 1.83    | 11/30/22 | Fixed abort when processing derived columns |
+| 1.84    | 01/17/23 | Fixed DESCRIBE so that column parsing ends appropriately |
