@@ -338,6 +338,7 @@
 #     10/03/2022 RLR v1.82 Add NOT NULL constraint when create tabel if repo indicates not nullable
 #     11/30/2022 RLR v1.83 Fixed abort when processing derived columns
 #     01/17/2023 RLR v1.84 Fixed DESCRIBE so that column parsing ends appropriately
+#     01/23/2023 RLR v1.85 Fixed bug checking files in filestore when HVR_DBRK_FILESTORE_OPS=none
 #
 ################################################################################
 import sys
@@ -355,7 +356,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.84"
+VERSION = "1.85"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -2397,7 +2398,7 @@ def get_filestore_handles():
 
 def files_found_in_filestore(table, file_list):
     if (options.filestore_ops & FileOps.CHECK) == 0:
-        return True
+        return True, 0
     folder = file_list[0]
     if '/' in folder:
         loc = folder.rfind('/')
@@ -2417,7 +2418,7 @@ def files_found_in_filestore(table, file_list):
     trace(3, "File check: files_in_list = {}; files_not_in_list = {}".format(files_in_list,files_not_in_list))
     if files_in_list == 0:
         trace(1, "Skipping table {0}; no files in {1}".format(table, options.folder))
-        return False, False
+        return False, 0
     if files_in_list < len(file_list):
         raise Exception("Not all files in HVR_FILE_NAMES found in {0} for {1}".format(options.folder, table))
     return True, files_not_in_list

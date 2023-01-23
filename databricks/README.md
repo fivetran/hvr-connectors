@@ -345,3 +345,4 @@ not set table properties during refresh.
 | 1.82    | 10/03/22 | Add NOT NULL constraint when create tabel if repo indicates not nullable |
 | 1.83    | 11/30/22 | Fixed abort when processing derived columns |
 | 1.84    | 01/17/23 | Fixed DESCRIBE so that column parsing ends appropriately |
+| 1.85    | 01/23/23 | Fixed bug checking files in filestore when HVR_DBRK_FILESTORE_OPS=none |
