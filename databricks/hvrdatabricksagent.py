@@ -339,6 +339,7 @@
 #     11/30/2022 RLR v1.83 Fixed abort when processing derived columns
 #     01/17/2023 RLR v1.84 Fixed DESCRIBE so that column parsing ends appropriately
 #     01/23/2023 RLR v1.85 Fixed bug checking files in filestore when HVR_DBRK_FILESTORE_OPS=none
+#     02/10/2023 RLR v1.86 Added option to map source bool or bit to Databricks BOOLEAN
 #
 ################################################################################
 import sys
@@ -356,7 +357,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.85"
+VERSION = "1.86"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -444,6 +445,7 @@ class Options:
     adapt_add_cols = False
     verify_ssl = True
     number_to_integer = False
+    bool_to_bool = False
     unmanaged_burst = False
     skip_tables= []
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
@@ -762,6 +764,8 @@ def trace_input():
         trace(3, "These columns are not in the target table: {}".format(options.ignore_columns))
     if options.number_to_integer:
         trace(3, "Map NUMBER with precision <= 10 and scale = 0 to INTEGER")
+    if options.bool_to_bool:
+        trace(3, "Map BIT/BOOL datatypes to BOOLEAN instead of BYTE")
     if options.recreate_tables_on_refresh and options.partition_columns:
         trace(3, "Define partitioning during create:")
         for tab,cols in options.partition_columns.items():
@@ -839,12 +843,14 @@ def process_args(argv):
     if len(cmdargs):
         try:
             list_args = cmdargs.split(" ");
-            opts, args = getopt.getopt(list_args,"c:d:D:E:i:lmno:O:prtwxy")
+            opts, args = getopt.getopt(list_args,"bc:d:D:E:i:lmno:O:prtwxy")
         except getopt.GetoptError:
             raise Exception("Error parsing command line arguments '" + cmdargs + "' due to invalid argument or invalid syntax")
     
         for opt, arg in opts:
-            if opt == '-c':
+            if opt == '-b':
+                options.bool_to_bool = True
+            elif opt == '-c':
                 options.context = arg
             elif opt == '-d':
                 options.isdeleted = arg
@@ -1688,7 +1694,10 @@ def databricks_datatype(col):
     if ctype in INTERVAL_TYPES:
         return 'STRING'
     if ctype in BOOL_TYPES:
-        return 'BYTE'
+        if options.bool_to_bool:
+            return 'BOOLEAN'
+        else:
+            return 'BYTE'
     if ctype == 'rowid' or ctype == 'urowid':
         return 'STRING'
     if ctype == 'uniqueidentifier':

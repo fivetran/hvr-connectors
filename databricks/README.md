@@ -346,3 +346,4 @@ not set table properties during refresh.
 | 1.83    | 11/30/22 | Fixed abort when processing derived columns |
 | 1.84    | 01/17/23 | Fixed DESCRIBE so that column parsing ends appropriately |
 | 1.85    | 01/23/23 | Fixed bug checking files in filestore when HVR_DBRK_FILESTORE_OPS=none |
+| 1.86    | 02/10/23 | Added option to map source bool or bit to Databricks BOOLEAN |
