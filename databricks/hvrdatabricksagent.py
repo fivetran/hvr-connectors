@@ -340,6 +340,7 @@
 #     01/17/2023 RLR v1.84 Fixed DESCRIBE so that column parsing ends appropriately
 #     01/23/2023 RLR v1.85 Fixed bug checking files in filestore when HVR_DBRK_FILESTORE_OPS=none
 #     02/10/2023 RLR v1.86 Added option to map source bool or bit to Databricks BOOLEAN
+#     02/13/2023 RLR v1.87 Fixed MERGE statement when match columns are null.
 #
 ################################################################################
 import sys
@@ -357,7 +358,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.86"
+VERSION = "1.87"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -2910,7 +2911,7 @@ def get_merge_sql(burst_table, target_table, columns, merge_keys, skip_clause, i
     merge_sql += ") m "
     merge_sql += " ON"
     for key in merge_keys:
-        merge_sql += " a.`{0}` = merge{0} AND".format(key)
+        merge_sql += " a.`{0}` <=> merge{0} AND".format(key)
     merge_sql = merge_sql[:-4]
     if options.no_isdeleted_on_target:
         merge_sql += " WHEN MATCHED AND m.{} = 0 THEN DELETE".format(options.optype)
@@ -2995,7 +2996,7 @@ def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys,
     merge_sql += " WHERE b.{} = 1{}) m ".format(options.isdeleted, skip_clause)
     merge_sql += " ON"
     for key in merge_keys:
-        merge_sql += " a.`{0}` = merge{0} AND".format(key)
+        merge_sql += " a.`{0}` <=> merge{0} AND".format(key)
     merge_sql = merge_sql[:-4]
     merge_sql += " WHEN MATCHED THEN UPDATE SET"
     for col in columns:
@@ -3012,7 +3013,7 @@ def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys,
     merge_sql += " WHERE b.{} = 0) m ".format(options.isdeleted)
     merge_sql += " ON"
     for key in merge_keys:
-        merge_sql += " a.`{0}` = merge{0} AND".format(key)
+        merge_sql += " a.`{0}` <=> merge{0} AND".format(key)
     merge_sql = merge_sql[:-4]
     merge_sql += " WHEN MATCHED AND m.{} = 0 THEN UPDATE SET".format(options.isdeleted)
     for col in columns:

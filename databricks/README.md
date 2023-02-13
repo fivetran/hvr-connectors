@@ -347,3 +347,4 @@ not set table properties during refresh.
 | 1.84    | 01/17/23 | Fixed DESCRIBE so that column parsing ends appropriately |
 | 1.85    | 01/23/23 | Fixed bug checking files in filestore when HVR_DBRK_FILESTORE_OPS=none |
 | 1.86    | 02/10/23 | Added option to map source bool or bit to Databricks BOOLEAN |
+| 1.87    | 02/13/23 | Fixed MERGE statement when match columns are null |
