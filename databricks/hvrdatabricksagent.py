@@ -1,4 +1,4 @@
-#!python
+#!python3
 
 ################################################################################
 ################################################################################
@@ -342,6 +342,7 @@
 #     02/10/2023 RLR v1.86 Added option to map source bool or bit to Databricks BOOLEAN
 #     02/13/2023 RLR v1.87 Fixed MERGE statement when match columns are null.
 #     02/21/2023 RLR v1.88 Support new text for file not found:  TABLE_OR_VIEW_NOT_FOUND
+#     03/15/2023 RLR v1.89 Fixed HVR 6 check broken due to rebranding to Fivetran
 #
 ################################################################################
 import sys
@@ -359,7 +360,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.88"
+VERSION = "1.89"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -497,7 +498,7 @@ def check_hvr6():
     if os.path.exists(verfile):
         with open(verfile, "r") as f:
             vers_str = f.readline()
-            if vers_str.startswith("HVR 6"):
+            if vers_str.startswith("Fivetran 6"):
                 return True
     return False
 

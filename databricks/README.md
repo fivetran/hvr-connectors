@@ -349,3 +349,4 @@ not set table properties during refresh.
 | 1.86    | 02/10/23 | Added option to map source bool or bit to Databricks BOOLEAN |
 | 1.87    | 02/13/23 | Fixed MERGE statement when match columns are null |
 | 1.88    | 02/21/23 | Support new text for file not found:  TABLE_OR_VIEW_NOT_FOUND |
+| 1.89    | 03/08/23 | Fixed HVR 6 check broken due to rebranding to Fivetran |
