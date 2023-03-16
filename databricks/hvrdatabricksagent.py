@@ -343,6 +343,7 @@
 #     02/13/2023 RLR v1.87 Fixed MERGE statement when match columns are null.
 #     02/21/2023 RLR v1.88 Support new text for file not found:  TABLE_OR_VIEW_NOT_FOUND
 #     03/15/2023 RLR v1.89 Fixed HVR 6 check broken due to rebranding to Fivetran
+#     03/16/2023 RLR v1.90 Improved 1.89 fix for backward compatibility
 #
 ################################################################################
 import sys
@@ -360,7 +361,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.89"
+VERSION = "1.90"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -498,7 +499,7 @@ def check_hvr6():
     if os.path.exists(verfile):
         with open(verfile, "r") as f:
             vers_str = f.readline()
-            if vers_str.startswith("Fivetran 6"):
+            if vers_str.startswith("HVR 6") or vers_str.startswith("Fivetran 6"):
                 return True
     return False
 
