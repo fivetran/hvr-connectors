@@ -1,4 +1,4 @@
-#!python
+#!python3
 
 ################################################################################
 ################################################################################
@@ -341,6 +341,8 @@
 #     01/23/2023 RLR v1.85 Fixed bug checking files in filestore when HVR_DBRK_FILESTORE_OPS=none
 #     02/10/2023 RLR v1.86 Added option to map source bool or bit to Databricks BOOLEAN
 #     02/13/2023 RLR v1.87 Fixed MERGE statement when match columns are null.
+#     02/21/2023 RLR v1.88 Support new text for file not found:  TABLE_OR_VIEW_NOT_FOUND
+#     03/15/2023 RLR v1.89 Fixed HVR 6 check broken due to rebranding to Fivetran
 #
 ################################################################################
 import sys
@@ -358,7 +360,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.87"
+VERSION = "1.89"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -496,7 +498,7 @@ def check_hvr6():
     if os.path.exists(verfile):
         with open(verfile, "r") as f:
             vers_str = f.readline()
-            if vers_str.startswith("HVR 6"):
+            if vers_str.startswith("Fivetran 6"):
                 return True
     return False
 
@@ -2491,12 +2493,22 @@ def execute_sql(sql_stmt, sql_name):
         print("Executing {0} SQL generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0])))
         raise
 
+def table_or_view_not_found(emsg):
+    if 'Table or view not found' in emsg:
+        return True
+    if 'TABLE_OR_VIEW_NOT_FOUND' in emsg:
+        return True
+    return False
+
 def sql_succeeded(sql_stmt, sql_name, return_if_error_has):
     trace(2, "Execute: {0}".format(sql_stmt))
     try:
         Connections.cursor.execute(sql_stmt)
         Connections.cursor.commit()
     except pyodbc.Error as ex:
+        if return_if_error_has == 'Table or view not found' and table_or_view_not_found(str(ex)):
+            trace(2, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
+            return False
         if return_if_error_has in str(ex):
             trace(2, "{0} SQL failed: {1}".format(sql_name, sql_stmt))
             return False
@@ -2629,7 +2641,7 @@ def burst_table_is_current(burst_table_name, columns, col_types, burst_columns):
                 return False
             all_columns.remove(colname)
     except pyodbc.Error as ex:
-        if "Table or view not found" in ex.args[1]:
+        if table_or_view_not_found(ex.args[1]):
             return False
         print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
@@ -2754,7 +2766,7 @@ def describe_table(table_name, columns, burst_columns):
                 targ_cols.append(colname)
                 col_types[colname] = col[1]
     except pyodbc.Error as ex:
-        if "Table or view not found" in ex.args[1]:
+        if table_or_view_not_found(ex.args[1]):
             return col_list, col_types, part_cols, targ_cols, [], table_type
         print("Desc SQL failed: {}".format(sql_stmt))
         raise ex
@@ -2781,7 +2793,7 @@ def check_derived_cols(table_name, col_list, col_types, part_cols, xtra_part_col
         Connections.cursor.execute(sql_stmt)
         tabddl = Connections.cursor.fetchone()
     except pyodbc.Error as ex:
-        if "Table or view not found" in ex.args[1]:
+        if table_or_view_not_found(ex.args[1]):
             trace(2, "{} not found".format(table_name))
             return col_list, col_types, part_cols
         print("Show SQL failed: {}".format(sql_stmt))
