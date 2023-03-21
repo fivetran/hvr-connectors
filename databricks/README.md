@@ -351,3 +351,4 @@ not set table properties during refresh.
 | 1.88    | 02/21/23 | Support new text for file not found:  TABLE_OR_VIEW_NOT_FOUND |
 | 1.89    | 03/15/23 | Fixed HVR 6 check broken due to rebranding to Fivetran |
 | 1.90    | 03/16/23 | Improved 1.89 fix for backward compatibility |
+| 1.91    | 03/20/23 | Fixed apply logic for Softkey target, tables with no key |

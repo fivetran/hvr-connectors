@@ -344,6 +344,7 @@
 #     02/21/2023 RLR v1.88 Support new text for file not found:  TABLE_OR_VIEW_NOT_FOUND
 #     03/15/2023 RLR v1.89 Fixed HVR 6 check broken due to rebranding to Fivetran
 #     03/16/2023 RLR v1.90 Improved 1.89 fix for backward compatibility
+#     03/20/2023 RLR v1.91 Fixed apply logic for Softkey target, tables with no key
 #
 ################################################################################
 import sys
@@ -361,7 +362,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.90"
+VERSION = "1.91"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -452,6 +453,7 @@ class Options:
     bool_to_bool = False
     unmanaged_burst = False
     skip_tables= []
+    softdelete_nokey= []
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -576,6 +578,9 @@ def env_load():
     skip_tables = os.getenv('HVR_DBRK_SKIP_TABLES', '')
     if skip_tables:
         options.skip_tables = skip_tables.split(',')
+    softdelete_nokey = os.getenv('HVR_DBRK_SOFTDELETE_NOKEY_DUPS', '')
+    if softdelete_nokey:
+        options.softdelete_nokey = softdelete_nokey.split(',')
     merge_delay = os.getenv('HVR_DBRK_MERGE_DELAY', '')
     if merge_delay:
         try:
@@ -758,6 +763,8 @@ def trace_input():
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
     if options.skip_tables:
         trace(3, "The tables {} will not be processed".format(options.skip_tables))
+    if options.softdelete_nokey:
+        trace(3, "Tables {} have no key and do have duplicates".format(options.softdelete_nokey))
     if not options.verify_ssl:
         trace(3, "If HVR6, when connecting to the hub, skip SSL cert verification")
     if options.adapt_add_cols:
@@ -2986,10 +2993,29 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
     trace(1, "Merging non-delete changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
-def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
+def alt_merge_softdelete(burst_table, target_table, columns, keys, target_cols, partition_cols):
+    merge_sql = "MERGE INTO {0} a USING ".format(target_table)
+    merge_sql += " {} b ON (".format(burst_table)
+    for key in keys:
+        merge_sql += " a.`{0}` <=> b.`{0}` AND".format(key)
+    merge_sql += " {} = 0)".format(options.optype)
+    merge_sql += " WHEN MATCHED THEN UPDATE SET"
+    for col in columns:
+        if not col in keys:
+            merge_sql += " a.`{0}` = b.`{0}`,".format(col)
+    merge_sql = merge_sql[:-1]
+    trace(1, "Merging deletes from {0} into {1}".format(burst_table, target_table))
+    execute_sql(merge_sql, 'Merge')
+    apply_inserts(burst_table, target_table, target_cols, partition_cols)
+
+def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, target_cols, partition_cols):
     if options.merge_delay:
         trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
         time.sleep(options.merge_delay)
+
+    if target_table in options.softdelete_nokey:
+        alt_merge_softdelete(burst_table, target_table, columns, keys, target_cols, partition_cols)
+        return
 
     skip_clause = ''
     if multidelete_table(target_table):
@@ -3082,7 +3108,7 @@ def apply_burst_table_changes_to_target(burst_table, target_table, columns, keyl
         if options.insert_after_merge_dels_and_upds:
             apply_inserts(burst_table, target_table, target_cols, partition_cols)
     else:
-        merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
+        merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, target_cols, partition_cols)
 
 def extract_missing_col(error_message):
     sl = error_message.find('cannot resolve ')
