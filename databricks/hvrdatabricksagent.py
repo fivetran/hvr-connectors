@@ -164,6 +164,23 @@
 #        to disable the connector setting any table properties, set this Environment
 #        variable to '' or "".
 #
+#     HVR_DBRK_SOFTDELETE_NOKEY_DUPS  (optional)
+#        Use special logic to merge the deleted rows into a SoftDelete table with
+#        no key (all columns are key so updates are always deletes/inserts).
+#        The Environment variable takes a list of table names separated by a
+#        comma.
+#
+#     HVR_DBRK_SOFTDELETE_NOKEY_DUPS_MODE (optionsl)
+#        Used to define how deletes are modified for tables in
+#        HVR_DBRK_SOFTDELETE_NOKEY_DUPS. If not defined, or set to 0, the script uses
+#        a simpler merge syntax that it otherwise uses.   This, if it works, is the
+#        most performant option.  If set to 1, the script selects all the deleted rows
+#        into memory and then updates the target table.  The script calls the odbc
+#        executemany method for this option.   If set to 2, the script also selects
+#        all the deleted rows into memory and then updates the target table one row
+#        at a time.  This is the least performant option, added in case of need for
+#        diagnostic purposes.
+#
 #     HVR_DBRK_MULTIDELETE  (advanced,optional, default:'')
 #        The agent supports multi-delete operations that are outputted by the
 #        SAPXForm module.  A multi-delete operation has an incomplete key.  For
@@ -344,7 +361,8 @@
 #     02/21/2023 RLR v1.88 Support new text for file not found:  TABLE_OR_VIEW_NOT_FOUND
 #     03/15/2023 RLR v1.89 Fixed HVR 6 check broken due to rebranding to Fivetran
 #     03/16/2023 RLR v1.90 Improved 1.89 fix for backward compatibility
-#     03/20/2023 RLR v1.91 Fixed apply logic for Softkey target, tables with no key
+#     03/20/2023 RLR v1.91 Use simpler merge for Softkey target, tables with no key
+#     04/12/2023 RLR v1.92 Options to use simpler merge or select/update a couple of ways
 #
 ################################################################################
 import sys
@@ -362,7 +380,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.91"
+VERSION = "1.92"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -454,6 +472,7 @@ class Options:
     unmanaged_burst = False
     skip_tables= []
     softdelete_nokey= []
+    softdelete_nokey_mode= 0
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -581,6 +600,7 @@ def env_load():
     softdelete_nokey = os.getenv('HVR_DBRK_SOFTDELETE_NOKEY_DUPS', '')
     if softdelete_nokey:
         options.softdelete_nokey = softdelete_nokey.split(',')
+    options.softdelete_nokey_mode = int(os.getenv('HVR_DBRK_SOFTDELETE_NOKEY_DUPS_MODE', 0))
     merge_delay = os.getenv('HVR_DBRK_MERGE_DELAY', '')
     if merge_delay:
         try:
@@ -764,7 +784,7 @@ def trace_input():
     if options.skip_tables:
         trace(3, "The tables {} will not be processed".format(options.skip_tables))
     if options.softdelete_nokey:
-        trace(3, "Tables {} have no key and do have duplicates".format(options.softdelete_nokey))
+        trace(3, "Tables {} have no key and do have duplicates; use mode {}".format(options.softdelete_nokey, options.softdelete_nokey_mode))
     if not options.verify_ssl:
         trace(3, "If HVR6, when connecting to the hub, skip SSL cert verification")
     if options.adapt_add_cols:
@@ -2501,6 +2521,42 @@ def execute_sql(sql_stmt, sql_name):
         print("Executing {0} SQL generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0])))
         raise
 
+def executemany_sql(sql_stmt, values, sql_name):
+    trace(2, "ExecuteMany: {0}".format(sql_stmt))
+    rows = len(values)
+    trace(2, "    Changes for {} rows".format(rows));
+    try:
+        Connections.cursor.executemany(sql_stmt, values)
+        Connections.cursor.commit()
+    except pyodbc.Error as ex:
+        print("{0} SQL, {1} rows, failed: {2}".format(sql_name, rows, sql_stmt))
+        raise ex
+    except Exception as ex:
+        print("Executing {0} SQL, {1} rows, raised: {2}".format(sql_name, rows, type(ex)))
+        raise ex
+    except:
+        print("Executing {0} SQL, {1} rows, generated unexpected error {2}".format(sql_name, rows, format(sys.exc_info()[0])))
+        raise
+
+def executearray(sql_stmt, value_table, sql_name):
+    trace(2, "ExecuteArray: {0}".format(sql_stmt))
+    trace(2, "    Changes for {} rows".format(len(value_table)));
+    rows= 0
+    try:
+        for values in value_table:
+            Connections.cursor.execute(sql_stmt, values)
+            rows += 1
+        Connections.cursor.commit()
+    except pyodbc.Error as ex:
+        print("{0} SQL failed row {2}: {1}".format(sql_name, sql_stmt, rows))
+        raise ex
+    except Exception as ex:
+        print("Executing {0} SQL row {2} raised: {1}".format(sql_name, type(ex), rows))
+        raise ex
+    except:
+        print("Executing {0} SQL row {2} generated unexpected error {1}".format(sql_name, format(sys.exc_info()[0]), rows))
+        raise
+
 def table_or_view_not_found(emsg):
     if 'Table or view not found' in emsg:
         return True
@@ -2993,7 +3049,7 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
     trace(1, "Merging non-delete changes from {0} into {1}".format(burst_table, target_table))
     execute_sql(merge_sql, 'Merge')
 
-def alt_merge_softdelete(burst_table, target_table, columns, keys, target_cols, partition_cols):
+def alt_1_merge_softdelete(burst_table, target_table, columns, keys, target_cols, partition_cols):
     merge_sql = "MERGE INTO {0} a USING ".format(target_table)
     merge_sql += " {} b ON (".format(burst_table)
     for key in keys:
@@ -3008,13 +3064,76 @@ def alt_merge_softdelete(burst_table, target_table, columns, keys, target_cols, 
     execute_sql(merge_sql, 'Merge')
     apply_inserts(burst_table, target_table, target_cols, partition_cols)
 
+def alt_2_merge_softdelete(burst_table, target_table, columns, keys, target_cols, partition_cols):
+    col_values= []
+    last_row_idx= -1
+    get_deletes = "SELECT "
+    for col in columns:
+        get_deletes += " `{0}`,".format(col)
+    get_deletes = get_deletes[:-1]
+    get_deletes += " FROM {}".format(burst_table)
+    get_deletes += " WHERE {} = 0".format(options.optype)
+    get_deletes += " ORDER BY "
+    for key in keys:
+        get_deletes += " `{0}`,".format(key)
+    get_deletes = get_deletes[:-1]
+    trace(1, "Select rows from '{}' for soft delete merge of deleted rows".format(burst_table))
+    trace(2, "Execute: {}".format(get_deletes))
+    try:
+        Connections.cursor.execute(get_deletes)
+        while True:
+            value = Connections.cursor.fetchone()
+            if not value:
+                break
+            this_row= []
+            for c in range(0, len(columns)):
+                if not columns[c] in keys:
+                    this_row.append(value[c])
+            for c in range(0, len(columns)):
+                if columns[c] in keys:
+                    this_row.append(value[c])
+            if len(col_values) > 0 and this_row == col_values[last_row_idx]:
+                continue
+            col_values.append(this_row)
+            last_row_idx += 1
+    except pyodbc.Error as ex:
+        print("SQL failed: {1}".format(get_deletes))
+        raise ex
+    except Exception as ex:
+        print("Executing SELECT SQL raised: {1}".format(type(ex)))
+        raise ex
+    except:
+        print("Executing SELECT SQL generated unexpected error {1}".format(format(sys.exc_info()[0])))
+        raise
+    update_sql= "UPDATE {}".format(target_table)
+    update_sql += " SET"
+    for c in range(0, len(columns)):
+        if not columns[c] in keys:
+           update_sql += " `{0}`=? ,".format(columns[c])
+    update_sql = update_sql[:-1]
+    update_sql += " WHERE"
+    for c in range(0, len(columns)):
+        if columns[c] in keys:
+           update_sql += " `{0}`=? and".format(columns[c])
+    update_sql = update_sql[:-3]
+    trace(1, "Update target table '{0}' using row data selected".format(target_table))
+    if options.softdelete_nokey_mode == 2:
+         executearray(update_sql, col_values, 'Update')
+    else:
+         executemany_sql(update_sql, col_values, 'Update')
+    apply_inserts(burst_table, target_table, target_cols, partition_cols)
+
 def merge_softdelete_changes_to_target(burst_table, target_table, columns, keys, target_cols, partition_cols):
     if options.merge_delay:
         trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
         time.sleep(options.merge_delay)
 
     if target_table in options.softdelete_nokey:
-        alt_merge_softdelete(burst_table, target_table, columns, keys, target_cols, partition_cols)
+        trace(2, "Use special logic ({}) to merge deletes for SoftDelete table with no key".format(options.softdelete_nokey_mode))
+        if options.softdelete_nokey_mode == 0:
+            alt_1_merge_softdelete(burst_table, target_table, columns, keys, target_cols, partition_cols)
+        else:
+            alt_2_merge_softdelete(burst_table, target_table, columns, keys, target_cols, partition_cols)
         return
 
     skip_clause = ''

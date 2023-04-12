@@ -352,3 +352,4 @@ not set table properties during refresh.
 | 1.89    | 03/15/23 | Fixed HVR 6 check broken due to rebranding to Fivetran |
 | 1.90    | 03/16/23 | Improved 1.89 fix for backward compatibility |
 | 1.91    | 03/20/23 | Fixed apply logic for Softkey target, tables with no key |
+| 1.92    | 04/12/23 | Added another way to handle deletes - select all rows & update target |
