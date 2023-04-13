@@ -363,6 +363,7 @@
 #     03/16/2023 RLR v1.90 Improved 1.89 fix for backward compatibility
 #     03/20/2023 RLR v1.91 Use simpler merge for Softkey target, tables with no key
 #     04/12/2023 RLR v1.92 Options to use simpler merge or select/update a couple of ways
+#     04/13/2023 RLR v1.93 Process truncates on select tables - only CDC and SoftDelete targets
 #
 ################################################################################
 import sys
@@ -380,7 +381,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.92"
+VERSION = "1.93"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -473,6 +474,7 @@ class Options:
     skip_tables= []
     softdelete_nokey= []
     softdelete_nokey_mode= 0
+    process_truncate= []
     set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
 
 class Connections:
@@ -601,6 +603,9 @@ def env_load():
     if softdelete_nokey:
         options.softdelete_nokey = softdelete_nokey.split(',')
     options.softdelete_nokey_mode = int(os.getenv('HVR_DBRK_SOFTDELETE_NOKEY_DUPS_MODE', 0))
+    process_truncate = os.getenv('HVR_DBRK_CHECK_FOR_TRUNCATE', '')
+    if process_truncate:
+        options.process_truncate = process_truncate.split(',')
     merge_delay = os.getenv('HVR_DBRK_MERGE_DELAY', '')
     if merge_delay:
         try:
@@ -2951,6 +2956,32 @@ def recreate_target_table(target_table, hvr_table, table_type):
 #
 # Process the data
 #
+def truncate_before_merge(burst_table, target_table):
+    if not target_table in options.process_truncate:
+        return False
+    is_trunc = "SELECT {}".format(options.isdeleted)
+    is_trunc += " FROM {}".format(burst_table)
+    is_trunc += " WHERE {} = 5".format(options.optype)
+    trace(1, "Check for a truncate record in {}".format(burst_table))
+    trace(2, "Execute: {}".format(is_trunc))
+    try:
+        Connections.cursor.execute(is_trunc)
+        while True:
+            value = Connections.cursor.fetchone()
+            if not value:
+                break
+            return True
+    except pyodbc.Error as ex:
+        print("SQL failed: {1}".format(is_trunc))
+        raise ex
+    except Exception as ex:
+        print("Executing SELECT SQL raised: {1}".format(type(ex)))
+        raise ex
+    except:
+        print("Executing SELECT SQL generated unexpected error {1}".format(format(sys.exc_info()[0])))
+        raise
+    return False
+
 def do_multi_delete(burst_table, target_table, columns, keys):
     md_keys = keys[:]
     unused = unused_keys_in_multidelete(target_table)
@@ -3210,6 +3241,8 @@ def apply_inserts(burst_table, target_table, columns, partition_cols):
     execute_sql(ins_sql, 'Insert')
 
 def apply_burst_table_changes_to_target(burst_table, target_table, columns, keylist, partition_cols, target_cols):
+    if truncate_before_merge(burst_table, target_table):
+        truncate_table(target_table)
     if options.no_optype_on_target:
         if options.optype in columns:
             columns.remove(options.optype)
