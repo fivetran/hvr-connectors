@@ -24,6 +24,7 @@ The following options are available with this connector:
 - If Linux:
   - unixODBC downloaded and installed
 - Python pyodbc package downloaded and installed
+  - Note: Install version 4.0.35 or lower.  Versions higher than this have bugs that affect the running of the AgentPlugin
 - A DSN configured to connect to Databricks (see Databricks documentation)
 - For Databricks hosted by Azure, using Blob storage:
   - Python azure-storage-blob package downloaded and installed
