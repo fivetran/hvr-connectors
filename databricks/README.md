@@ -24,6 +24,7 @@ The following options are available with this connector:
 - If Linux:
   - unixODBC downloaded and installed
 - Python pyodbc package downloaded and installed
+  - Note: Install version 4.0.35 or lower.  Versions higher than this have bugs that affect the running of the AgentPlugin
 - A DSN configured to connect to Databricks (see Databricks documentation)
 - For Databricks hosted by Azure, using Blob storage:
   - Python azure-storage-blob package downloaded and installed
@@ -349,4 +350,8 @@ not set table properties during refresh.
 | 1.86    | 02/10/23 | Added option to map source bool or bit to Databricks BOOLEAN |
 | 1.87    | 02/13/23 | Fixed MERGE statement when match columns are null |
 | 1.88    | 02/21/23 | Support new text for file not found:  TABLE_OR_VIEW_NOT_FOUND |
-| 1.89    | 03/08/23 | Fixed HVR 6 check broken due to rebranding to Fivetran |
+| 1.89    | 03/15/23 | Fixed HVR 6 check broken due to rebranding to Fivetran |
+| 1.90    | 03/16/23 | Improved 1.89 fix for backward compatibility |
+| 1.91    | 03/20/23 | Fixed apply logic for Softkey target, tables with no key |
+| 1.92    | 04/12/23 | Added another way to handle deletes - select all rows & update target |
+| 1.93    | 04/13/23 | Process truncates on select tables - only CDC and SoftDelete targets |
