@@ -364,6 +364,7 @@
 #     03/20/2023 RLR v1.91 Use simpler merge for Softkey target, tables with no key
 #     04/12/2023 RLR v1.92 Options to use simpler merge or select/update a couple of ways
 #     04/13/2023 RLR v1.93 Process truncates on select tables - only CDC and SoftDelete targets
+#     05/03/2023 RLR v1.95 Fix so HVR_DBRK_CHECK_FOR_TRUNCATE is list of HVR names, not target names
 #
 ################################################################################
 import sys
@@ -794,6 +795,8 @@ def trace_input():
         trace(3, "If HVR6, when connecting to the hub, skip SSL cert verification")
     if options.adapt_add_cols:
         trace(3, "If a column exists in HVR and not in the target table, add it to the target")
+    if options.process_truncate:
+        trace(3, "Process truncates for: {}".format(options.process_truncate))
     if options.recreate_tables_on_refresh and options.context:
         trace(3, "Use context '{}' when processing actions that apply to the table".format(options.context))
     if options.ignore_columns:
@@ -2956,8 +2959,8 @@ def recreate_target_table(target_table, hvr_table, table_type):
 #
 # Process the data
 #
-def truncate_before_merge(burst_table, target_table):
-    if not target_table in options.process_truncate:
+def truncate_before_merge(hvr_table_name, burst_table):
+    if not hvr_table_name in options.process_truncate:
         return False
     is_trunc = "SELECT {}".format(options.isdeleted)
     is_trunc += " FROM {}".format(burst_table)
@@ -3240,8 +3243,8 @@ def apply_inserts(burst_table, target_table, columns, partition_cols):
     trace(1, "Apply inserts from {} to {}".format(burst_table, target_table))
     execute_sql(ins_sql, 'Insert')
 
-def apply_burst_table_changes_to_target(burst_table, target_table, columns, keylist, partition_cols, target_cols):
-    if truncate_before_merge(burst_table, target_table):
+def apply_burst_table_changes_to_target(burst_table, target_table, columns, keylist, partition_cols, target_cols, table_id):
+    if truncate_before_merge(table_id, burst_table):
         truncate_table(target_table)
     if options.no_optype_on_target:
         if options.optype in columns:
@@ -3452,7 +3455,7 @@ def process_table(tab_entry, file_list, numrows):
     t[3] = timer()
 
     if use_burst_logic:
-        apply_burst_table_changes_to_target(load_table, target_table, columns, tab_entry[3], partition_cols, target_cols)
+        apply_burst_table_changes_to_target(load_table, target_table, columns, tab_entry[3], partition_cols, target_cols, tab_entry[1])
         t[4] = timer()
     else:
         t[4] = t[3]
