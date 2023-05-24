@@ -14,11 +14,13 @@
 #     This script can be used to send table rows into Databricks delta tables
 #
 # OPTIONS
+#     -b           - map HVR bool to Databricks bool
 #     -c <context> - name of the context used in the refresh
 #     -d <name>    - name of the SoftDelete column, default is 'is_deleted'
 #     -D <name>    - name of the SoftDelete column, default is 'is_deleted'
 #                    if specified with "-D", the target table has this column
 #     -E <envvar>  - pass an environment variable
+#     -h           - downshift the target table names (HVR_BASE_NAMES)
 #     -i <collist> - if '-r', these (Extra) columns are not in target
 #     -l           - downshift {hvr_tbl_name} in HVR_DBRK_EXTERNAL_LOC
 #     -m           - map NUMBER with prec<=10 and scale=0 to INTEGER
@@ -365,6 +367,7 @@
 #     04/12/2023 RLR v1.92 Options to use simpler merge or select/update a couple of ways
 #     04/13/2023 RLR v1.93 Process truncates on select tables - only CDC and SoftDelete targets
 #     05/03/2023 RLR v1.95 Fix so HVR_DBRK_CHECK_FOR_TRUNCATE is list of HVR names, not target names
+#     05/22/2023 RLR v1.96 Add option to downshift target table names
 #
 ################################################################################
 import sys
@@ -382,7 +385,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.93"
+VERSION = "1.96"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -448,6 +451,7 @@ class Options:
     external_loc = ''
     burst_external_loc = ''
     downshift_name = False
+    downshift_target = False
     use_wasb = False
     auto_optimize = True
     multidelete_map = {}
@@ -882,7 +886,7 @@ def process_args(argv):
     if len(cmdargs):
         try:
             list_args = cmdargs.split(" ");
-            opts, args = getopt.getopt(list_args,"bc:d:D:E:i:lmno:O:prtwxy")
+            opts, args = getopt.getopt(list_args,"bc:d:D:E:hi:lmno:O:prtwxy")
         except getopt.GetoptError:
             raise Exception("Error parsing command line arguments '" + cmdargs + "' due to invalid argument or invalid syntax")
     
@@ -904,6 +908,8 @@ def process_args(argv):
                     os.environ[ev[0]] = ev[1]
                 except Exception as err:
                     print("Failed {} putting {} in the environment".format(err, arg))
+            elif opt == '-h':
+                options.downshift_target = True
             elif opt == '-i':
                 options.ignore_columns = arg.split(',')
             elif opt == '-l':
@@ -3360,6 +3366,8 @@ def process_table(tab_entry, file_list, numrows):
     global file_counter
     
     target_table = tab_entry[0]
+    if options.downshift_target:
+        target_table = target_table.lower()
     columns = tab_entry[2].split(",")
     burst_columns = []
     load_table = target_table
