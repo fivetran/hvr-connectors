@@ -367,7 +367,7 @@
 #     04/12/2023 RLR v1.92 Options to use simpler merge or select/update a couple of ways
 #     04/13/2023 RLR v1.93 Process truncates on select tables - only CDC and SoftDelete targets
 #     05/03/2023 RLR v1.95 Fix so HVR_DBRK_CHECK_FOR_TRUNCATE is list of HVR names, not target names
-#     05/22/2023 RLR v1.96 Add option to downshift target table names
+#     06/05/2023 RLR v1.96 Add option to downshift target object names
 #
 ################################################################################
 import sys
@@ -1777,7 +1777,10 @@ def target_create_table(hvr_table, table, columns):
     create_sql = "CREATE OR REPLACE TABLE {} (".format(table)
     sep = ' '
     for col in columns:
-        create_sql += "{} `{}` {}".format(sep, col[1], databricks_datatype(col))
+        targ_col= col[1]
+        if options.downshift_target:
+            targ_col = targ_col.lower()
+        create_sql += "{} `{}` {}".format(sep, targ_col, databricks_datatype(col))
         if col[5] == '0':
             create_sql += " NOT NULL"
         sep = ','
@@ -2669,7 +2672,10 @@ def new_source_columns(columns, target_cols, derived_target_cols, target_table, 
     sep = ' '
     for col in columns:
         col_type = databricks_datatype(col)
-        alter_sql += "{} `{}` {}".format(sep, col[1], col_type)
+        targ_col= col[1]
+        if options.downshift_target:
+            targ_col = targ_col.lower()
+        alter_sql += "{} `{}` {}".format(sep, targ_col, col_type)
         new_cols[col[1]] = col_type
         sep = ','
     alter_sql += ")"
