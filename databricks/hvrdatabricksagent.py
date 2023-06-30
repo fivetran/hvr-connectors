@@ -368,6 +368,7 @@
 #     04/13/2023 RLR v1.93 Process truncates on select tables - only CDC and SoftDelete targets
 #     05/03/2023 RLR v1.95 Fix so HVR_DBRK_CHECK_FOR_TRUNCATE is list of HVR names, not target names
 #     06/05/2023 RLR v1.96 Add option to downshift target object names
+#     06/22/2023 RLR v1.97 Fixed multi-delete logic multiple columns
 #
 ################################################################################
 import sys
@@ -385,7 +386,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.96"
+VERSION = "1.97"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -2106,8 +2107,8 @@ def multidelete_table(tablename):
 
 def unused_keys_in_multidelete(tablename):
     if tablename in options.multidelete_map:
-        return options.multidelete_map[tablename]
-    return 'pageno'
+        return options.multidelete_map[tablename].split(',')
+    return ['pageno']
 
 def file_for_table(tablename, filename, fileext):
     trace(2, "file_for_table {} {} {}".format(tablename, filename, fileext))
@@ -3000,8 +3001,9 @@ def truncate_before_merge(hvr_table_name, burst_table):
 def do_multi_delete(burst_table, target_table, columns, keys):
     md_keys = keys[:]
     unused = unused_keys_in_multidelete(target_table)
-    if unused and unused in md_keys:
-        md_keys.remove(unused)
+    for key in unused:
+        if key in md_keys:
+            md_keys.remove(key)
     selkeys = ''
     dml = 'Delete'
     for key in md_keys:
