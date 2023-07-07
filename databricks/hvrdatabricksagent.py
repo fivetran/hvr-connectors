@@ -370,6 +370,7 @@
 #     06/05/2023 RLR v1.96 Add option to downshift target object names
 #     06/22/2023 RLR v1.97 Fixed multi-delete logic multiple columns
 #     06/30/2023 RLR v1.98 Changed multi-delete update is_deleted to merge all columns
+#     07/06/2023 RLR v1.99 Added option to use merge for Timekey
 #
 ################################################################################
 import sys
@@ -387,7 +388,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.98"
+VERSION = "1.99"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -465,6 +466,7 @@ class Options:
     ignore_columns = []
     target_names = {}
     target_is_timekey = False
+    merge_timekey_changes = False
     truncate_target_on_refresh = True
     filestore_ops = DEFAULT_FILEOPS
     other_files_in_loc = []
@@ -645,6 +647,8 @@ def env_load():
             print("Invalid value '{}' defined for HVR_DBRK_CONNECT_TIMEOUT; must be integer".format(conn_timeout))
     if os.getenv('HVR_DBRK_TIMEKEY', '').upper() == 'ON':
         options.target_is_timekey = True
+    if os.getenv('HVR_DBRK_TIMEKEY_USE_MERGE', '').upper() == 'ON':
+        options.merge_timekey_changes = True
     if os.getenv('HVR_DBRK_ADAPT_DDL_ADD_COL', '').upper() == 'ON':
         options.adapt_add_cols = True
     if os.getenv('HVR_DBRK_UNMANAGED_BURST', '').upper() == 'ON':
@@ -784,6 +788,8 @@ def trace_input():
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
     trace(3, "Isdeleted column is {}; column exists on target = {}; use SoftDelete logic = {}".format(options.isdeleted, (not options.no_isdeleted_on_target), (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey = {}".format(options.target_is_timekey))
+    if options.merge_timekey_changes:
+        trace(3, "Process timekey using merge SQL")
     if options.file_format == 'csv':
         trace(3, "File format options: format = '{}' delimiter = '{}'  line separator = '{}'".format(options.file_format, options.delimiter, options.line_separator))
     else:
@@ -3039,6 +3045,25 @@ def do_multi_delete(burst_table, target_table, columns, keys):
     trace(1, "{0} multi-deletes in {1}".format(dml, target_table))
     execute_sql(sql, dml)
 
+def merge_timekey_changes_to_target(burst_table, target_table, columns, keys, partition_cols):
+    sql = "MERGE INTO {0} a USING ".format(target_table)
+    sql += " {} b ON (".format(burst_table)
+    for key in keys:
+        sql += " a.`{0}` <=> b.`{0}` AND".format(key)
+    sql = sql[:-4]
+    sql += ") WHEN NOT MATCHED THEN INSERT"
+    sql += "  ("
+    for col in columns:
+        sql += "`{0}`,".format(col)
+    sql = sql[:-1]
+    sql += ") VALUES ("
+    for col in columns:
+        sql += "b.`{0}`,".format(col)
+    sql = sql[:-1]
+    sql += ")"
+    trace(1, "Merging timekey changes from {0} into {1}".format(burst_table, target_table))
+    execute_sql(sql, 'Merge')
+
 def get_merge_sql(burst_table, target_table, columns, merge_keys, skip_clause, include_deletes):
     merge_sql = "MERGE INTO {0} a USING (".format(target_table)
     merge_sql += " SELECT "
@@ -3074,6 +3099,10 @@ def merge_changes_to_target(burst_table, target_table, columns, keys, partition_
     if options.merge_delay:
         trace(3, "Sleep {} seconds before MERGE".format(options.merge_delay))
         time.sleep(options.merge_delay)
+
+    if options.target_is_timekey and options.merge_timekey_changes:
+        merge_timekey_changes_to_target(burst_table, target_table, columns, keys, partition_cols)
+        return
 
     skip_clause = 'AND m.{} != 0 '.format(options.optype)
     if options.insert_after_merge_dels_and_upds:
@@ -3403,13 +3432,15 @@ def process_table(tab_entry, file_list, numrows):
             return
 
     t[1] = timer()
-    use_burst_logic = options.mode == "integ_end" and not options.target_is_timekey
+    timekey_do_insert= options.target_is_timekey and (not options.merge_timekey_changes or multidelete_table(target_table))
+    use_burst_logic = (options.mode == "integ_end") and (not options.target_is_timekey or not timekey_do_insert)
     if use_burst_logic:
         load_table += DELTA_BURST_SUFFIX
-        if options.no_optype_on_target:
-            burst_columns.append(options.optype)
-        if options.no_isdeleted_on_target:
-            burst_columns.append(options.isdeleted)
+        if not options.target_is_timekey:
+            if options.no_optype_on_target:
+                burst_columns.append(options.optype)
+            if options.no_isdeleted_on_target:
+                burst_columns.append(options.isdeleted)
     else:
         if options.no_optype_on_target:
             if options.optype in columns:
