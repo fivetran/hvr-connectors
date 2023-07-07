@@ -369,6 +369,7 @@
 #     05/03/2023 RLR v1.95 Fix so HVR_DBRK_CHECK_FOR_TRUNCATE is list of HVR names, not target names
 #     06/05/2023 RLR v1.96 Add option to downshift target object names
 #     06/22/2023 RLR v1.97 Fixed multi-delete logic multiple columns
+#     06/30/2023 RLR v1.98 Changed multi-delete update is_deleted to merge all columns
 #
 ################################################################################
 import sys
@@ -386,7 +387,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.97"
+VERSION = "1.98"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -781,7 +782,7 @@ def trace_input():
     if options.database:
         trace(3, "Use database {}".format(options.database))
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
-    trace(3, "Isdeleted column is {}; column exists on target = {}; use SoftDelete logic".format(options.isdeleted, (not options.no_isdeleted_on_target)))
+    trace(3, "Isdeleted column is {}; column exists on target = {}; use SoftDelete logic = {}".format(options.isdeleted, (not options.no_isdeleted_on_target), (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey = {}".format(options.target_is_timekey))
     if options.file_format == 'csv':
         trace(3, "File format options: format = '{}' delimiter = '{}'  line separator = '{}'".format(options.file_format, options.delimiter, options.line_separator))
@@ -3012,16 +3013,28 @@ def do_multi_delete(burst_table, target_table, columns, keys):
         selkeys += key
     if options.no_isdeleted_on_target:
         sql = "DELETE FROM "
+        sql += "{} AS t ".format(target_table)
+        sql += "WHERE EXISTS (SELECT {0} FROM {1} WHERE ".format(selkeys, burst_table)
+        for key in md_keys:
+                sql += " t.{0} = {0} AND".format(key)
+        sql += " {} = 8)".format(options.optype)
     else:
-        sql = "UPDATE "
-        dml = 'Update'
-    sql += "{} AS t ".format(target_table)
-    if not options.no_isdeleted_on_target:
-        sql += "SET {} = 1 ".format(options.isdeleted)
-    sql += "WHERE EXISTS (SELECT {0} FROM {1} WHERE ".format(selkeys, burst_table)
-    for key in md_keys:
-        sql += " t.{0} = {0} AND".format(key)
-    sql += " {} = 8)".format(options.optype)
+        sql = "MERGE INTO {0} a USING (".format(target_table)
+        sql += " SELECT "
+        for key in md_keys:
+            sql += " b.`{0}` as merge{0},".format(key)
+        sql += " b.* FROM {} b".format(burst_table)
+        sql += " WHERE b.{} = 1 AND b.{} = 8".format(options.isdeleted, options.optype)
+        sql += ") m "
+        sql += " ON"
+        for key in md_keys:
+            sql += " a.`{0}` <=> merge{0} AND".format(key)
+        sql = sql[:-4]
+        sql += " WHEN MATCHED THEN UPDATE".format(options.optype)
+        sql += "  SET"
+        for col in columns:
+            sql += " a.`{0}` = m.`{0}`,".format(col)
+        sql = sql[:-1]
 
     trace(1, "{0} multi-deletes in {1}".format(dml, target_table))
     execute_sql(sql, dml)
