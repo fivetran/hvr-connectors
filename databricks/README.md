@@ -357,4 +357,7 @@ not set table properties during refresh.
 | 1.93    | 04/13/23 | Process truncates on select tables - only CDC and SoftDelete targets |
 | 1.95    | 05/03/23 | Fix so HVR_DBRK_CHECK_FOR_TRUNCATE is list of HVR names, not target names |
 | 1.96    | 06/05/23 | Add option to downshift target table & column names |
+| 1.97    | 06/22/23 | Fixed multi-delete logic multiple columns |
+| 1.98    | 06/30/23 | Changed multi-delete update is_deleted to merge all columns |
+| 1.99    | 07/06/23 | Added option to use merge for Timekey |
 
