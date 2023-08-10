@@ -125,6 +125,23 @@
 #     HVR_DBRK_DELIMITER         (optional)
 #        The value of /FieldSeparator from the FileFormat action, if set
 #
+#     HVR_DBRK_INCREMENTAL_LOAD  (optional)
+#        Designed to be used where the refresh selects the set of new changes and
+#        writes them to a file, a separate agent writes the changes to a burst table,
+#        then this script applies the changes.  When called for refresh the script
+#        runs an abbreviated integrate.
+#
+#        The required environment variables for this mode are:
+#            HVR_HOME
+#            HVR_CONFIG
+#            HVR_BASE_NAMES
+#            HVR_COL_NAMES_BASE
+#            HVR_DBRK_DATABASE
+#            HVR_DBRK_DSN
+#            HVR_DBRK_TRACE
+#            HVR_TBL_KEYS_BASE
+#            HVR_TBL_NAMES
+#
 #     HVR_DBRK_LINE_SEPARATOR    (optional)
 #        The value of /LineSeparator from the FileFormat action, if set
 #
@@ -371,6 +388,7 @@
 #     06/22/2023 RLR v1.97 Fixed multi-delete logic multiple columns
 #     06/30/2023 RLR v1.98 Changed multi-delete update is_deleted to merge all columns
 #     07/06/2023 RLR v1.99 Added option to use merge for Timekey
+#     08/10/2023 RLR v2.00 Added Incremental Load option
 #
 ################################################################################
 import sys
@@ -388,7 +406,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "1.99"
+VERSION = "2.00"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -444,47 +462,48 @@ class Options:
     access_id = ''
     secret_key = ''
     region = ''
+    adapt_add_cols = False
+    auto_optimize = True
+    bool_to_bool = False
+    burst_external_loc = ''
+    context = ''
+    delimiter = ','
+    downshift_name = False
+    downshift_target = False
+    external_loc = ''
     file_format = 'csv'
     file_pattern = []
-    tblname_in_file_pattern = -1
-    delimiter = ','
+    filestore_ops = DEFAULT_FILEOPS
+    ignore_columns = []
+    incremental_load = False
+    insert_after_merge_dels_and_upds = False
+    isdeleted = 'is_deleted'
     line_separator = ''
     load_burst_delay = None
     merge_delay = None
-    external_loc = ''
-    burst_external_loc = ''
-    downshift_name = False
-    downshift_target = False
-    use_wasb = False
-    auto_optimize = True
-    multidelete_map = {}
-    context = ''
-    optype = 'op_type'
-    no_optype_on_target = True
-    isdeleted = 'is_deleted'
-    no_isdeleted_on_target = True
-    ignore_columns = []
-    target_names = {}
-    target_is_timekey = False
     merge_timekey_changes = False
-    truncate_target_on_refresh = True
-    filestore_ops = DEFAULT_FILEOPS
+    multidelete_map = {}
+    no_isdeleted_on_target = True
+    no_optype_on_target = True
+    number_to_integer = False
+    optype = 'op_type'
     other_files_in_loc = []
+    parallel_count = 0
+    partition_columns = {}
+    process_truncate= []
     recreate_tables_on_refresh = False
     refresh_restrict = ''
-    insert_after_merge_dels_and_upds = False
-    partition_columns = {}
-    parallel_count = 0
-    adapt_add_cols = False
-    verify_ssl = True
-    number_to_integer = False
-    bool_to_bool = False
-    unmanaged_burst = False
+    set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
     skip_tables= []
     softdelete_nokey= []
     softdelete_nokey_mode= 0
-    process_truncate= []
-    set_tblproperties = 'delta.autoOptimize.optimizeWrite = true, delta.autoOptimize.autoCompact = true'
+    target_is_timekey = False
+    target_names = {}
+    tblname_in_file_pattern = -1
+    truncate_target_on_refresh = True
+    unmanaged_burst = False
+    use_wasb = False
+    verify_ssl = True
 
 class Connections:
     hvr6 = None
@@ -653,6 +672,8 @@ def env_load():
         options.adapt_add_cols = True
     if os.getenv('HVR_DBRK_UNMANAGED_BURST', '').upper() == 'ON':
         options.unmanaged_burst = True
+    if os.getenv('HVR_DBRK_INCREMENTAL_LOAD', '').upper() == 'ON':
+        options.incremental_load = True
     options.database = os.getenv('HVR_DBRK_DATABASE', '')
     tblproperties = os.getenv('HVR_DBRK_TBLPROPERTIES','')
     if tblproperties:
@@ -707,6 +728,35 @@ def env_load():
             trace(1, "HVR_DBRK_SLICE_REFRESH_ID set but num slices = {} and slice num = {}; disabling sliced refresh logic".format(num_slices, slice_num))
             refresh_options.job_name = ''
 
+    if options.incremental_load:
+        if refresh_options.job_name:
+            raise Exception("HVR_DBRK_SLICE_REFRESH_ID is invalid combined with HVR_DBRK_INCREMENTAL_LOAD")
+        if options.recreate_tables_on_refresh:
+            raise Exception("Runtime option '-r' is invalid combined with HVR_DBRK_INCREMENTAL_LOAD")
+        if os.getenv('HVR_DBRK_FILESTORE_OPS'):
+            raise Exception("HVR_DBRK_FILESTORE_OPS is invalid combined with HVR_DBRK_INCREMENTAL_LOAD")
+        if os.getenv('HVR_DBRK_FILE_EXPR'):
+            raise Exception("HVR_DBRK_FILE_EXPR is invalid combined with HVR_DBRK_INCREMENTAL_LOAD")
+
+    if not options.incremental_load:
+        extract_cloud_file_attributes()
+
+    if options.filestore_ops & FileOps.CLEANUP:
+        if options.filestore == FileStore.AWS_BUCKET:
+            print("Filestore cleanup not enabled yet for AWS file store")
+            options.filestore_ops = DEFAULT_FILEOPS
+        else:
+            file_expr = os.getenv('HVR_DBRK_FILE_EXPR', '')
+            if not file_expr:
+                print("HVR_DBRK_FILE_EXPR is not set; cannot determine if filestore cleanup is safe; disabling")
+                options.filestore_ops = DEFAULT_FILEOPS
+            else:
+                path_parts = os.path.split(file_expr)
+                if not '{hvr_tbl_name}' in path_parts[0]:
+                    print("Integrate /RenameExpression, as passed in HVR_DBRK_FILE_EXPR, does not have the table name in the folder component; disabling filestore cleanup")
+                    options.filestore_ops = DEFAULT_FILEOPS
+
+def extract_cloud_file_attributes():
     file_loc = options.agent_env['HVR_FILE_LOC']
     if file_loc:
         if file_loc[:6] == 'wasbs:':
@@ -740,21 +790,6 @@ def env_load():
             if "/" in options.resource:
                 options.directory = options.resource[options.resource.find("/")+1:]
                 options.resource = options.resource[:options.resource.find("/")]
-   
-    if options.filestore_ops & FileOps.CLEANUP:
-        if options.filestore == FileStore.AWS_BUCKET:
-            print("Filestore cleanup not enabled yet for AWS file store")
-            options.filestore_ops = DEFAULT_FILEOPS
-        else:
-            file_expr = os.getenv('HVR_DBRK_FILE_EXPR', '')
-            if not file_expr:
-                print("HVR_DBRK_FILE_EXPR is not set; cannot determine if filestore cleanup is safe; disabling")
-                options.filestore_ops = DEFAULT_FILEOPS
-            else:
-                path_parts = os.path.split(file_expr)
-                if not '{hvr_tbl_name}' in path_parts[0]:
-                    print("Integrate /RenameExpression, as passed in HVR_DBRK_FILE_EXPR, does not have the table name in the folder component; disabling filestore cleanup")
-                    options.filestore_ops = DEFAULT_FILEOPS
 
 def parse_expression(filename_expression):
     elems = []
@@ -774,30 +809,31 @@ def parse_expression(filename_expression):
     trace(2, "   result {} {}".format(tablename_part, elems))
     return tablename_part, elems
 
-def trace_input():
-    """
-    """
-    trace(3, "============================================")
-    trace(3, "Resource: {0}; Bucket/container: {1}, Root folder: {2}".format(options.resource, options.container, options.directory))
-    if options.filestore == FileStore.ADLS_G2 and options.use_wasb:
-        trace(3, "Use WASB to access files in SQL commands instead of ABFS")
-    if options.connect_timeout:
-        trace(3, "Connection timeout = {}".format(options.connect_timeout))
+def display_input():
     if options.database:
         trace(3, "Use database {}".format(options.database))
     trace(3, "Optype column is {}; column exists on target = {}".format(options.optype, (not options.no_optype_on_target)))
     trace(3, "Isdeleted column is {}; column exists on target = {}; use SoftDelete logic = {}".format(options.isdeleted, (not options.no_isdeleted_on_target), (not options.no_isdeleted_on_target)))
     trace(3, "Target is timekey = {}".format(options.target_is_timekey))
+    if options.incremental_load:
+        trace(3, "If called during refresh, run integrate with burst tables already loaded")
+        trace(3, "============================================")
+        return
+    trace(3, "Resource: {0}; Bucket/container: {1}, Root folder: {2}".format(options.resource, options.container, options.directory))
+    if options.filestore == FileStore.ADLS_G2 and options.use_wasb:
+        trace(3, "Use WASB to access files in SQL commands instead of ABFS")
+    if options.connect_timeout:
+        trace(3, "Connection timeout = {}".format(options.connect_timeout))
     if options.merge_timekey_changes:
         trace(3, "Process timekey using merge SQL")
+    if options.unmanaged_burst:
+        trace(3, "Create burst table(s) as external tables, location integrate staging folder")
     if options.file_format == 'csv':
         trace(3, "File format options: format = '{}' delimiter = '{}'  line separator = '{}'".format(options.file_format, options.delimiter, options.line_separator))
     else:
         trace(3, "File format = '{}'".format(options.file_format))
     if options.file_pattern:
         trace(3, "File name elements: ({}) {}".format(options.tblname_in_file_pattern, options.file_pattern))
-    if options.unmanaged_burst:
-        trace(3, "Create burst table(s) as external tables, location integrate staging folder")
     trace(3, "Create/recreate target table(s) during refresh = {0}".format(options.recreate_tables_on_refresh))
     if options.skip_tables:
         trace(3, "The tables {} will not be processed".format(options.skip_tables))
@@ -852,6 +888,9 @@ def trace_input():
             trace(3, "Cleanup of files in filestore enabled")
         if options.filestore_ops == 0:
             trace(3, "All filestore operations disabled")
+    trace(3, "============================================")
+
+def trace_input():
     trace(3, "============================================")
     env = os.environ
     if python3:
@@ -2155,7 +2194,7 @@ def table_file_name_map():
                     trace(2, "Table '{}', basename '{}', target name '{}'".format(name, hvr_base_names[idx], options.target_names[name]))
                     hvr_base_names[idx] = options.target_names[name]
         hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
-        hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS'].split(":")
+        hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS_BASE'].split(":")
     else:
         hvr_tbl_names = []
         hvr_base_names = []
@@ -2452,7 +2491,7 @@ def delete_files_from_azdfs(file_list):
 # Functions that interact with file store where integrate put the files
 #
 def get_filestore_handles():
-    if not options.filestore_ops:
+    if not options.filestore_ops or options.incremental_load:
         return
     if options.filestore == FileStore.ADLS_G2:
         get_azdfs_handles()
@@ -2463,6 +2502,8 @@ def get_filestore_handles():
 
 def files_found_in_filestore(table, file_list):
     if (options.filestore_ops & FileOps.CHECK) == 0:
+        return True, 0
+    if options.incremental_load:
         return True, 0
     folder = file_list[0]
     if '/' in folder:
@@ -2491,6 +2532,8 @@ def files_found_in_filestore(table, file_list):
 def delete_files_from_filestore(file_list):
     if (options.filestore_ops & FileOps.DELETE) == 0:
         return
+    if options.incremental_load:
+        return
     trace(1, "Delete files from {0}".format(options.container))
     if options.filestore == FileStore.ADLS_G2:
         delete_files_from_azdfs(file_list)
@@ -2500,6 +2543,8 @@ def delete_files_from_filestore(file_list):
         delete_files_from_s3(file_list)
 
 def delete_other_files_from_filestore():
+    if options.incremental_load:
+        return
     if not options.mode == "integ_end" or not options.other_files_in_loc:
         return
     if options.filestore_ops & FileOps.CLEANUP:
@@ -3471,7 +3516,7 @@ def process_table(tab_entry, file_list, numrows):
                         if not truncate_table(target_table):
                             raise Exception("Target table does not exist; cannot continue refresh")
 
-    if not file_list:
+    if not file_list and not options.incremental_load:
         return
 
     columns, col_types, partition_cols, target_cols, derived_targ_cols, table_type = describe_table(target_table, columns, burst_columns)
@@ -3482,7 +3527,7 @@ def process_table(tab_entry, file_list, numrows):
         if new_cols:
             col_types.update(new_cols)
 
-    if use_burst_logic:
+    if use_burst_logic and not options.incremental_load:
         # Use the existing burst table if it matches
         # If using managed burst, always CREATE OR REPLACE to create or truncate the table
         if unmanaged_burst:
@@ -3510,7 +3555,7 @@ def process_table(tab_entry, file_list, numrows):
 
     t[2] = timer()
 
-    if not use_burst_logic or not unmanaged_burst:
+    if (not use_burst_logic or not unmanaged_burst) and not options.incremental_load:
         copy_into_delta_table(load_table, columns, col_types, burst_columns, file_list)
     t[3] = timer()
 
@@ -3532,6 +3577,8 @@ def process_table(tab_entry, file_list, numrows):
                      " verify files: {3:.2f}s,"
                      " check/create burst: {4:.2f}s,"
                      " merge into target: {6:.2f}s,".format(numrows, target_table, t[5]-t[0], t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3]))
+        elif options.incremental_load:
+            trace(0, "Merged changes into '{0}' in {1:.2f} seconds:".format(target_table, t[5]-t[0]))
         else:
             trace(0, "Merged {0} changes into '{1}' in {2:.2f} seconds:"
                      " verify files: {3:.2f}s,"
@@ -3586,9 +3633,13 @@ def process(argv):
     process_args(argv)
     env_load()
     trace_input()
+    display_input()
 
     if (options.mode == "refr_write_end" or 
          (options.mode == "integ_end" and os.getenv('HVR_FILE_NAMES'))):
+
+        if options.incremental_load:
+            options.mode = "integ_end"
 
         start = timer()
         if refresh_options.job_name:
