@@ -80,6 +80,9 @@
 #     HVR_MONGODB_TRACE        (advanced,optional, default:0)
 #         See the DIAGNOSTICS section.
 #
+#  ACTIONS
+#     In FileFormat action set JsonMode to ROW_FRAGMENTS (required)
+#
 #
 ################################################################################
 
@@ -91,10 +94,6 @@ import json
 from enum import Enum
 import pymongo
 from pymongo import MongoClient
-
-# json files are encoded in UTF-8 by default 
-reload(sys)
-sys.setdefaultencoding("utf-8")
 
 
 class SetupMode(Enum):
@@ -271,10 +270,9 @@ def file_loc_cleanup():
     file_loc = options.agent_env['HVR_FILE_LOC']
     files = os.listdir(file_loc)
     for name in files:
-        if (name == "." or name == ".." or os.path.isdir(name) == True) :
-            continue
-        
         full_name = file_loc + "/" + name
+        if (name == "." or name == ".." or os.path.isdir(full_name) == True) :
+            continue
         os.remove(full_name)   
      
 
