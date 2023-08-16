@@ -389,6 +389,7 @@
 #     06/30/2023 RLR v1.98 Changed multi-delete update is_deleted to merge all columns
 #     07/06/2023 RLR v1.99 Added option to use merge for Timekey
 #     08/10/2023 RLR v2.00 Added Incremental Load option
+#     08/16/2023 RLR v2.01 If incremental load remove "__bur" from table names
 #
 ################################################################################
 import sys
@@ -406,7 +407,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "2.00"
+VERSION = "2.01"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -2193,6 +2194,13 @@ def table_file_name_map():
                 if name in options.target_names.keys() and idx < len(hvr_base_names):
                     trace(2, "Table '{}', basename '{}', target name '{}'".format(name, hvr_base_names[idx], options.target_names[name]))
                     hvr_base_names[idx] = options.target_names[name]
+        if options.incremental_load:
+            for idx, name in enumerate(hvr_tbl_names):
+                if name.lower()[-5:] == DELTA_BURST_SUFFIX:
+                    hvr_tbl_names[idx]= name[:-5]
+            for idx, name in enumerate(hvr_base_names):
+                if name.lower()[-5:] == DELTA_BURST_SUFFIX:
+                    hvr_base_names[idx]= name[:-5]
         hvr_col_names = options.agent_env['HVR_COL_NAMES_BASE'].split(":")
         hvr_tbl_keys = options.agent_env['HVR_TBL_KEYS_BASE'].split(":")
     else:
@@ -2241,7 +2249,7 @@ def table_file_name_map():
     if options.parallel_count:
         file_counter = total_files
 
-    trace(4, "HVR_BASE_NAMES={}, number of names= {}, leftover files={}".format(options.agent_env['HVR_BASE_NAMES'], len(hvr_base_names), files))
+    trace(4, "Target table names={}, number of names= {}, leftover files={}".format(hvr_base_names, len(hvr_base_names), files))
     if hvr_base_names and files:  
         if not total_files:
             raise Exception ("Cannot associate filenames in $HVR_FILE_NAMES with their tables; please set HVR_DBRK_FILE_EXPR to Integrate /RenameExpression")

@@ -361,4 +361,5 @@ not set table properties during refresh.
 | 1.98    | 06/30/23 | Changed multi-delete update is_deleted to merge all columns |
 | 1.99    | 07/06/23 | Added option to use merge for Timekey |
 | 2.00    | 08/10/23 | Added Incremental Load environment variable |
+| 2.01    | 08/16/23 | If incremental load remove "__bur" from table names |
 
