@@ -390,7 +390,6 @@
 #     07/06/2023 RLR v1.99 Added option to use merge for Timekey
 #     08/10/2023 RLR v2.00 Added Incremental Load option
 #     08/16/2023 RLR v2.01 If incremental load remove "__bur" from table names
-#     10/12/2023 RLR v2.02 Incremental load: if num rows=0, skip table
 #
 ################################################################################
 import sys
@@ -408,7 +407,7 @@ import requests
 from timeit import default_timer as timer
 import multiprocessing
 
-VERSION = "2.02"
+VERSION = "2.01"
 
 DELTA_BURST_SUFFIX     = "__bur"
 UNMANAGED_BURST_SUFFIX = "__umb"
@@ -3476,10 +3475,6 @@ def process_table(tab_entry, file_list, numrows):
     burst_columns = []
     load_table = target_table
     unmanaged_burst = options.unmanaged_burst
-
-    if options.incremental_load and numrows == 0:
-        trace(1, "Skip table {}, no rows to process".format(target_table))
-        return
 
     t = [0,0,0,0,0,0]
     t[0] = timer()

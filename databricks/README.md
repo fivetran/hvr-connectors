@@ -362,5 +362,4 @@ not set table properties during refresh.
 | 1.99    | 07/06/23 | Added option to use merge for Timekey |
 | 2.00    | 08/10/23 | Added Incremental Load option |
 | 2.01    | 08/16/23 | If incremental load remove "__bur" from table names |
-| 2.02    | 10/12/23 | Incremental load: if num rows=0, skip table |
 
