@@ -25,6 +25,8 @@
 //
 // CHANGE_LOG
 //     01/13/2022 RLR:  Is basically working.  Needs improvement.
+//     2024-02-01 CA:   Tied logging of Integrate map to trace_level, added 
+//						handling of null columns
 //
 //===========================================================================
 
@@ -89,7 +91,7 @@ func log_environment(){
 func get_required_ev(evname string) (string){
     ev := os.Getenv(evname)
     if (ev == "") {
-        fail_out("Required Environment action "+evname+" is missing; cannot continue")
+        fail_out("Required Environment Variable "+evname+" is missing; cannot continue")
     }
     return ev
 }
@@ -131,7 +133,8 @@ func parse_args() {
 }
 
 func env_load() {
-    options.trace_level = get_integer_ev("HVR_SPANNER_TRACE", 0)
+    options.trace_level = get_integer_ev("HVR_SPANNER_TRACE", 5)
+	//options.trace_level = 3
     options.file_loc = os.Getenv("HVR_FILE_LOC")
     options.files = get_list_ev("HVR_FILE_NAMES", ":")
     options.tables = get_list_ev("HVR_TBL_NAMES", ":")
@@ -165,6 +168,7 @@ func build_table_map() (map[string][]string){
             fail_out("Expecting default filename format {integ_tstamp}-{tbl_name}.csv; got "+file)
         }
         table_name := file[dash+1:len(file)-4]
+		log.Println("Table name "+table_name)
         if !valid_tablename(table_name) {
             log.Println("Table name "+table_name+" parsed from "+file+" is not valid")
             log.Println("Expecting default filename format {integ_tstamp}-{tbl_name}.csv")
@@ -269,11 +273,12 @@ func truncateTarget(tbl_name string){
 }
 
 func integRows(lineCount int, tbl_name string, col_names_slice []string, rows [][]string, file_full_name string) (rowCount int){
+
     var colMap = make(map[string]string)
 
     ctx := context.Background()
-
-    client, err := spanner.NewClient(ctx, options.full_db_id)
+	
+	client, err := spanner.NewClient(ctx, options.full_db_id)
     if err != nil {
         log.Fatal("An error occured while creating Spanner client", "Error:", err)
     }
@@ -298,12 +303,14 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
         recordCount := 0
         rowCount++
         for c := 0; c < len(col_names_slice); c++ {
-            insertMap[col_names_slice[c]] = rows[i][c]
-            if (rows[i][c] != "") {
-                recordCount++
-            }
+			if len(rows[i][c]) > 0 {
+				insertMap[col_names_slice[c]] = rows[i][c]
+				if (rows[i][c] != "") {
+					recordCount++
+				}
+			}
         }
-        log.Println("*** Integrate ", insertMap)
+        log_message(3, fmt.Sprintf("*** Integrate ", insertMap))
         insertItf := make(map[string]interface{}, len(insertMap))
         for k, v := range insertMap {
             insertItf[k] = v
@@ -351,7 +358,8 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
     var integ_rows int
     var integ_rows_total int
     var lineCount_total int
-
+	
+	log.Println("****processing table****")
     log.Println("Process ", table)
     log.Println("   target table name", options.target_tables[tabindex])
     log.Println("   columns", options.columns[tabindex])
@@ -360,6 +368,7 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
     log.Println("   files", table_map[table])
 
     options.full_db_id = "projects/"+options.project+"/instances/"+options.instance+"/databases/"+options.database+""
+	log.Println("options.full_db_id ", options.full_db_id)
     target_table := options.target_tables[tabindex]
 
     if options.mode == "refr_write_end" {
@@ -368,7 +377,7 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
     integ_rows_total = 0
     for _, filename := range table_map[table] {
         file_full_name := options.file_loc+"/"+filename
-        log_message(2, "Staging file full name"+file_full_name)
+        log_message(2, "Staging file full name "+file_full_name)
         if _, err := os.Stat(file_full_name); err == nil {
             headerLine, _, err := readHeader(file_full_name)
             log_message(1, "Staging file header "+headerLine)
@@ -392,6 +401,8 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
 }
 
 func process() {
+	
+	log.Println("building table map")
     table_map := build_table_map()
     log.Println("TableMap: ", table_map)
     for tabindex, tablename := range options.tables {
@@ -408,7 +419,7 @@ func main(){
 
     if options.mode == "refr_write_end" || 
         (options.mode == "integ_end" && len(options.files) > 0) {
-
+		log.Println("calling process()")
         process()
     }
 }
