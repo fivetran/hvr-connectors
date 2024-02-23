@@ -437,8 +437,8 @@ func get_table_datatypes(table_name string, db_id string) map[string]string {
 		fail_out(fmt.Sprintf("Error creating Spanner client: %v", err))
 	}
 
-	stmt := spanner.NewStatement("SELECT column_name, spanner_type FROM INFORMATION_SCHEMA.COLUMNS where table_name = @tbl")
-	stmt.Params["tbl"] = table_name
+	stmt := spanner.NewStatement("SELECT column_name, spanner_type FROM INFORMATION_SCHEMA.COLUMNS where lower(table_name) = @tbl")
+	stmt.Params["tbl"] = strings.ToLower(table_name)
 	iter := client.Single().Query(ctx, stmt)
 
 	err = iter.Do(func(r *spanner.Row) error {
@@ -455,7 +455,11 @@ func get_table_datatypes(table_name string, db_id string) map[string]string {
 		log.Panic()
 	}
 
-	//log_message(1, fmt.Sprint(datatypes_map, "\n"))
+	if len(datatypes_map) == 0 {
+		log_message(1, fmt.Sprint("*** No datatypes found for ", table_name, " ***"))
+	} else {
+		log_message(2, fmt.Sprint("Datatypes for ", table_name, ": ", datatypes_map))
+	}
 	return datatypes_map
 }
 
