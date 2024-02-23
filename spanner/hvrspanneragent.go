@@ -160,6 +160,7 @@ func valid_tablename(parsed string) bool {
 	return false
 }
 
+
 func build_table_map() map[string][]string {
 	table_map := make(map[string][]string)
 
@@ -181,6 +182,7 @@ func build_table_map() map[string][]string {
 		table_map[table_name] = append(table_map[table_name], file)
 	}
 	return table_map
+
 }
 
 func readHeader(file_name string) (line string, lastLine int, err error) {
@@ -275,6 +277,7 @@ func truncateTarget(tbl_name string) {
 
 	log_message(1, "All rows deleted from target table "+tbl_name+".")
 }
+
 
 func integRows(lineCount int, tbl_name string, col_names_slice []string, rows [][]string, file_full_name string, dtypes map[string]string) (rowCount int) {
 
@@ -373,6 +376,7 @@ func file_loc_cleanup(file_full_name string) {
 	}
 }
 
+
 func process_table(table string, tabindex int, table_map map[string][]string) {
 	var integ_rows int
 	var integ_rows_total int
@@ -467,6 +471,7 @@ func process() {
 
 func main() {
 	log.SetFlags(0)
+
 
 	parse_args()
 	env_load()
