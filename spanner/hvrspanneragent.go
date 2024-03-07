@@ -18,9 +18,8 @@
 //     HVR_SPANNER_DATABASE        (required)
 //        Google Spanner database name
 //
-//	   HVR_REFRESH_THREADS		   (optional, default 10)
-//		  Number of threads to be used for processing files during refresh
-//
+//     HVR_SPANNER_REFRESH_THREADS (optional, default 10)
+//	  Number of threads to be used for processing files during refresh
 //
 //     HVR_SPANNER_TRACE           (optional)
 //        Enables tracing of the hvrspanneragent.
@@ -36,7 +35,7 @@
 //     	2024-02-22 CA:  Added checking of datatypes from Spanner table
 //                      to allow insert of float types
 //		2024-03-07 CA:	Added multi-threading goroutine for refresh only.
-//						Uses HVR_REFRESH_THREADS with default of 10 threads.
+//						Uses HVR_SPANNER_REFRESH_THREADS with default of 10 threads.
 //
 //===========================================================================
 
@@ -146,7 +145,7 @@ func parse_args() {
 
 func env_load() {
 	options.trace_level = get_integer_ev("HVR_SPANNER_TRACE", 5)
-	options.num_ref_threads = get_integer_ev("HVR_REFRESH_THREADS", 10)
+	options.num_ref_threads = get_integer_ev("HVR_SPANNER_REFRESH_THREADS", 10)
 	options.file_loc = os.Getenv("HVR_FILE_LOC")
 	options.files = get_list_ev("HVR_FILE_NAMES", ":")
 	options.tables = get_list_ev("HVR_TBL_NAMES", ":")
