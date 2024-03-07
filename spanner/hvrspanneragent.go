@@ -18,6 +18,10 @@
 //     HVR_SPANNER_DATABASE        (required)
 //        Google Spanner database name
 //
+//	   HVR_REFRESH_THREADS		   (optional, default 10)
+//		  Number of threads to be used for processing files during refresh
+//
+//
 //     HVR_SPANNER_TRACE           (optional)
 //        Enables tracing of the hvrspanneragent.
 //           0 - No tracing
@@ -26,11 +30,13 @@
 //           3 - Row-level logging
 //
 // CHANGE_LOG
-//     2022-01-13 RLR:  Is basically working.  Needs improvement.
-//     2024-02-01 CA:   Tied logging of Integrate map to trace_level, added
-//						handling of null columns
-//     2024-02-22 CA:   Added checking of datatypes from Spanner table
+//     	2022-01-13 RLR: Is basically working.  Needs improvement.
+//     	2024-02-01 CA:  Tied logging of Integrate map to trace_level, added
+//						handling of null columns.
+//     	2024-02-22 CA:  Added checking of datatypes from Spanner table
 //                      to allow insert of float types
+//		2024-03-07 CA:	Added multi-threading goroutine for refresh only.
+//						Uses HVR_REFRESH_THREADS with default of 10 threads.
 //
 //===========================================================================
 
@@ -46,25 +52,27 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	spanner "cloud.google.com/go/spanner"
 )
 
 type Options struct {
-	trace_level    int
-	mode           string
-	file_loc       string
-	files          []string
-	tables         []string
-	target_tables  []string
-	keys           []string
-	columns        []string
-	target_columns []string
-	project        string
-	instance       string
-	database       string
-	full_db_id     string
-	soft_delete    bool
+	trace_level     int
+	num_ref_threads int
+	mode            string
+	file_loc        string
+	files           []string
+	tables          []string
+	target_tables   []string
+	keys            []string
+	columns         []string
+	target_columns  []string
+	project         string
+	instance        string
+	database        string
+	full_db_id      string
+	soft_delete     bool
 }
 
 var options Options
@@ -138,7 +146,7 @@ func parse_args() {
 
 func env_load() {
 	options.trace_level = get_integer_ev("HVR_SPANNER_TRACE", 5)
-	//options.trace_level = 3
+	options.num_ref_threads = get_integer_ev("HVR_REFRESH_THREADS", 10)
 	options.file_loc = os.Getenv("HVR_FILE_LOC")
 	options.files = get_list_ev("HVR_FILE_NAMES", ":")
 	options.tables = get_list_ev("HVR_TBL_NAMES", ":")
@@ -160,7 +168,6 @@ func valid_tablename(parsed string) bool {
 	return false
 }
 
-
 func build_table_map() map[string][]string {
 	table_map := make(map[string][]string)
 
@@ -173,7 +180,6 @@ func build_table_map() map[string][]string {
 			fail_out("Expecting default filename format {integ_tstamp}-{tbl_name}.csv; got " + file)
 		}
 		table_name := file[dash+1 : len(file)-4]
-		//log.Println("Table name " + table_name)
 		if !valid_tablename(table_name) {
 			log.Println("Table name " + table_name + " parsed from " + file + " is not valid")
 			log.Println("Expecting default filename format {integ_tstamp}-{tbl_name}.csv")
@@ -182,7 +188,6 @@ func build_table_map() map[string][]string {
 		table_map[table_name] = append(table_map[table_name], file)
 	}
 	return table_map
-
 }
 
 func readHeader(file_name string) (line string, lastLine int, err error) {
@@ -277,7 +282,6 @@ func truncateTarget(tbl_name string) {
 
 	log_message(1, "All rows deleted from target table "+tbl_name+".")
 }
-
 
 func integRows(lineCount int, tbl_name string, col_names_slice []string, rows [][]string, file_full_name string, dtypes map[string]string) (rowCount int) {
 
@@ -376,15 +380,15 @@ func file_loc_cleanup(file_full_name string) {
 	}
 }
 
-
 func process_table(table string, tabindex int, table_map map[string][]string) {
-	var integ_rows int
+
 	var integ_rows_total int
 	var lineCount_total int
 
 	table_file_list := table_map[table]
 	file_count := len(table_file_list)
 	target_table := options.target_tables[tabindex]
+	thread_count := options.num_ref_threads
 
 	log_message(1, fmt.Sprint("**** Processing table ", table, " ****"))
 	log_message(2, fmt.Sprint("   target table name", target_table))
@@ -397,33 +401,86 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
 	log_message(1, fmt.Sprint("Writing to: ", options.full_db_id, "/", target_table, "."))
 	datatypes_map := get_table_datatypes(target_table, options.full_db_id)
 
-	if options.mode == "refr_write_end" {
-		truncateTarget(target_table)
-	}
 	integ_rows_total = 0
-	for _, filename := range table_map[table] {
-		file_full_name := options.file_loc + "/" + filename
-		log_message(2, "Staging file full name "+file_full_name)
-		if _, err := os.Stat(file_full_name); err == nil {
-			headerLine, _, err := readHeader(file_full_name)
-			log_message(2, "Staging file header "+headerLine)
-			if err != nil {
-				fail_out(fmt.Sprintf("Error reading header: %v", err))
-			}
-			col_names_slice := strings.Split(headerLine, ",")
-			log_message(2, fmt.Sprintf("Table columns based on header %s", col_names_slice))
-			rows, lineCount := loadCsv(file_full_name, len(col_names_slice))
-			log_message(2, "Staging file loaded successfully.")
-			integ_rows = integRows(lineCount, target_table, col_names_slice, rows, file_full_name, datatypes_map)
-			lineCount_total += lineCount
+
+	if options.mode == "integ_end" {
+		for _, filename := range table_map[table] {
+			integ_rows, lineCount := process_file(filename, target_table, datatypes_map) // process the file
+			// log the processing with human-friendly thread and file numbers
+			log_message(1, "processed file "+filename+" for "+target_table+" table")
+
 			integ_rows_total += integ_rows
+			lineCount_total += lineCount
 		}
+	} else if options.mode == "refr_write_end" {
+		truncateTarget(target_table)
+
+		log_message(1, "Making "+fmt.Sprint(thread_count)+" threads for table "+target_table)
+		var ch = make(chan int, file_count)
+		var wg sync.WaitGroup
+		wg.Add(thread_count)
+
+		for i := 0; i < thread_count; i++ {
+			i := i
+			go func() {
+				for {
+					a, ok := <-ch
+					if !ok { // if there is nothing to do and the channel has been closed then end the goroutine
+						wg.Done()
+						return
+					}
+					var integ_rows int
+					filename := table_file_list[a]
+					integ_rows, lineCount := process_file(filename, target_table, datatypes_map) // process the file
+					// log the processing with human-friendly thread and file numbers
+					log_message(1, "thread "+fmt.Sprint(i+1)+" processed file "+fmt.Sprint(a+1)+", "+filename+" for "+target_table+" table")
+
+					integ_rows_total += integ_rows
+					lineCount_total += lineCount
+				}
+
+			}()
+		}
+
+		// make a queue for the files
+		for i := 0; i < file_count; i++ {
+			ch <- i // add i to the queue
+		}
+
+		close(ch) // This tells the goroutines there's nothing else to do
+		wg.Wait()
+
+		log_message(1, "Finished "+fmt.Sprint(thread_count)+" threads for table "+target_table)
 	}
+
 	if options.mode == "refr_write_end" {
-		log_message(1, "Refreshed "+strconv.Itoa(integ_rows_total)+" rows to target table "+target_table+".")
+		log.Println("Refreshed " + strconv.Itoa(integ_rows_total) + " rows to target table " + target_table + ".")
 	} else {
-		log_message(1, "Integrated "+strconv.Itoa(integ_rows_total)+" rows to target table "+target_table+".")
+		log.Println("Integrated " + strconv.Itoa(integ_rows_total) + " rows to target table " + target_table + ".")
 	}
+}
+
+func process_file(fname string, tbl string, dtypes map[string]string) (int, int) {
+	var int_rows int
+	var lineCount int
+
+	file_full_name := options.file_loc + "/" + fname
+	log_message(2, "Staging file full name "+file_full_name)
+	if _, err := os.Stat(file_full_name); err == nil {
+		headerLine, _, err := readHeader(file_full_name)
+		log_message(2, "Staging file header "+headerLine)
+		if err != nil {
+			fail_out(fmt.Sprintf("Error reading header: %v", err))
+		}
+		col_names_slice := strings.Split(headerLine, ",")
+		log_message(2, fmt.Sprintf("Table columns based on header %s", col_names_slice))
+		rows, lineCount := loadCsv(file_full_name, len(col_names_slice))
+		log_message(2, "Staging file loaded successfully.")
+		int_rows = integRows(lineCount, tbl, col_names_slice, rows, file_full_name, dtypes)
+
+	}
+
+	return int_rows, lineCount
 }
 
 func get_table_datatypes(table_name string, db_id string) map[string]string {
@@ -437,8 +494,8 @@ func get_table_datatypes(table_name string, db_id string) map[string]string {
 		fail_out(fmt.Sprintf("Error creating Spanner client: %v", err))
 	}
 
-	stmt := spanner.NewStatement("SELECT column_name, spanner_type FROM INFORMATION_SCHEMA.COLUMNS where lower(table_name) = @tbl")
-	stmt.Params["tbl"] = strings.ToLower(table_name)
+	stmt := spanner.NewStatement("SELECT column_name, spanner_type FROM INFORMATION_SCHEMA.COLUMNS where table_name = @tbl")
+	stmt.Params["tbl"] = table_name
 	iter := client.Single().Query(ctx, stmt)
 
 	err = iter.Do(func(r *spanner.Row) error {
@@ -455,11 +512,7 @@ func get_table_datatypes(table_name string, db_id string) map[string]string {
 		log.Panic()
 	}
 
-	if len(datatypes_map) == 0 {
-		log_message(1, fmt.Sprint("*** No datatypes found for ", table_name, " ***"))
-	} else {
-		log_message(2, fmt.Sprint("Datatypes for ", table_name, ": ", datatypes_map))
-	}
+	//log_message(1, fmt.Sprint(datatypes_map, "\n"))
 	return datatypes_map
 }
 
@@ -475,7 +528,6 @@ func process() {
 
 func main() {
 	log.SetFlags(0)
-
 
 	parse_args()
 	env_load()
