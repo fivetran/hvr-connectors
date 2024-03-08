@@ -1,4 +1,4 @@
-# hvrspanneragent.py - HVR Spanner connector
+# hvrspanneragent.go - HVR Spanner connector
 ## Description
 This Go script can be used to perform updates and deletes against a Spanner table, and/or refresh a Spanner table.  The script uses the Spanner client to write maps for inserts or updates based on csv files that are written to a directory by an HVR file connector.
 
