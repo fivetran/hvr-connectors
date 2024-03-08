@@ -23,8 +23,8 @@ The following options are not available with this connector:
         - The ColumnProperties action defined with options Name=hvr_is_deleted, Extra, SoftDelete, Datatype=integer
     - For Timekey Replication
         - The AgentPlugin action defined with options Command=$HVR_CONFIG/plugin/agent/spanner/hvrspanneragent.exe 
-        - The ColumnProperties /Name=hvr_integ_key /Extra /IntegrateExpression={hvr_integ_seq} /TimeKey /Datatype=varchar /Length=36
-        - The ColumnProperties /Name=hvr_integ_op /Extra /IntegrateExpression={hvr_op} /Datatype=integer 
+        - The ColumnProperties action defined with options Name=hvr_integ_key, Extra, IntegrateExpression={hvr_integ_seq}, TimeKey, Datatype=varchar, Length=36
+        - The ColumnProperties Name=hvr_integ_op, Extra, IntegrateExpression={hvr_op}, Datatype=integer 
 
 ## Environment variables
 The following environment variables are required by the the agent or optionally influence the behavior of
