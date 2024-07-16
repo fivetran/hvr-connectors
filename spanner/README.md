@@ -78,5 +78,6 @@ The script does not support the use of slicing for refresh.
 | Version | Date       | Description |
 | ------- | ---------- | ----------- |
 | 1.0     | 2024-03-07 | First version - includes all changes up to this time as defined in the change log in hvrspanneragent.go |
+| 1.1     | 2024-07-15 | Added code to ensure that numeric strings aren't converted to integers if the target column is a string |
 
 
