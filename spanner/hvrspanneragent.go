@@ -36,6 +36,8 @@
 //                      to allow insert of float types
 //		2024-03-07 CA:	Added multi-threading goroutine for refresh only.
 //						Uses HVR_SPANNER_REFRESH_THREADS with default of 10 threads.
+//		2024-07-15 CA: 	Added check for string column to prevent conversion of numeric strings
+//						to integers
 //
 //===========================================================================
 
@@ -328,6 +330,9 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
 				log_message(3, fmt.Sprint(k, ": value ", v, ": is a float"))
 				f, _ := strconv.ParseFloat(v, 64)
 				insertItf[k] = f
+			} else if strings.HasPrefix(dtypes[strings.ToLower(k)], "STRING") {
+				log_message(3, fmt.Sprint(k, ": value ", v, ": is a string"))
+				insertItf[k] = v
 			} else {
 				i, int_err := strconv.Atoi(v)
 				if int_err != nil {
@@ -486,6 +491,7 @@ func get_table_datatypes(table_name string, db_id string) map[string]string {
 
 	datatypes_map := make(map[string]string)
 	ctx := context.Background()
+	col_count := 0
 	log_message(1, fmt.Sprint("Getting column defintions from Spanner for ", table_name, "."))
 
 	client, err := spanner.NewClient(ctx, db_id)
@@ -493,7 +499,7 @@ func get_table_datatypes(table_name string, db_id string) map[string]string {
 		fail_out(fmt.Sprintf("Error creating Spanner client: %v", err))
 	}
 
-	stmt := spanner.NewStatement("SELECT column_name, spanner_type FROM INFORMATION_SCHEMA.COLUMNS where table_name = @tbl")
+	stmt := spanner.NewStatement("SELECT column_name, spanner_type FROM INFORMATION_SCHEMA.COLUMNS where lower(table_name) = lower(@tbl)")
 	stmt.Params["tbl"] = table_name
 	iter := client.Single().Query(ctx, stmt)
 
@@ -505,10 +511,15 @@ func get_table_datatypes(table_name string, db_id string) map[string]string {
 		}
 		datatypes_map[strings.ToLower(column_name)] = spanner_type
 		log_message(3, fmt.Sprint(column_name, " ", spanner_type))
+		col_count += 1
 		return nil
 	})
 	if err != nil {
 		log.Panic()
+	}
+
+	if col_count == 0 {
+		log_message(1, fmt.Sprint(col_count, " column defintions found in Spanner for ", table_name, ", check case."))
 	}
 
 	//log_message(1, fmt.Sprint(datatypes_map, "\n"))
