@@ -524,9 +524,9 @@ refresh_options = RefreshOptions()
 def trace(level, msg):
     if options.trace >= level:
         if not multiprocessing.current_process()._identity:
-            print(msg)
+            ## removed logging for security concerns
         else:
-            print("p{}: {}".format(multiprocessing.current_process()._identity[0], msg))
+            ## removed logging for security concerns
         sys.stdout.flush() 
 
 def version_normalizer(version):
