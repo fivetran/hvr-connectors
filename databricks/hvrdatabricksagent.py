@@ -390,6 +390,7 @@
 #     07/06/2023 RLR v1.99 Added option to use merge for Timekey
 #     08/10/2023 RLR v2.00 Added Incremental Load option
 #     08/16/2023 RLR v2.01 If incremental load remove "__bur" from table names
+#     08/07/2024 CA  v2.02 Removed print statements from trace function
 #
 ################################################################################
 import sys
@@ -523,11 +524,8 @@ refresh_options = RefreshOptions()
 
 def trace(level, msg):
     if options.trace >= level:
-        if not multiprocessing.current_process()._identity:
-            print(msg)
-        else:
-            print("p{}: {}".format(multiprocessing.current_process()._identity[0], msg))
-        sys.stdout.flush() 
+            # removed for security purposes
+        sys.stdout.flush()   
 
 def version_normalizer(version):
     version_array = version.split('.')
