@@ -524,11 +524,8 @@ refresh_options = RefreshOptions()
 
 def trace(level, msg):
     if options.trace >= level:
-        if not multiprocessing.current_process()._identity:
-            ## removed logging for security concerns
-        else:
-            ## removed logging for security concerns
-        sys.stdout.flush() 
+            # removed for security purposes
+        sys.stdout.flush()   
 
 def version_normalizer(version):
     version_array = version.split('.')
