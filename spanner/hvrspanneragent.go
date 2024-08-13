@@ -7,6 +7,7 @@
 //
 // OPTIONS
 //     -s      Implement Softkey logic for deletes
+//     -n      Do not truncate Spanner tables on refresh
 //
 // ENVIRONMENT VARIABLES
 //     HVR_SPANNER_PROJECTID       (required)
@@ -38,6 +39,7 @@
 //						Uses HVR_SPANNER_REFRESH_THREADS with default of 10 threads.
 //		2024-07-15 CA: 	Added check for string column to prevent conversion of numeric strings
 //						to integers
+//		2024-08-13 CA:  Added -n flag to indicate Spanner tables will not be truncated on refresh
 //
 //===========================================================================
 
@@ -74,6 +76,7 @@ type Options struct {
 	database        string
 	full_db_id      string
 	soft_delete     bool
+	no_truncate     bool
 }
 
 var options Options
@@ -140,6 +143,11 @@ func parse_args() {
 		for _, arg := range user_args {
 			if arg == "-s" {
 				options.soft_delete = true
+			}
+			if arg == "-n" {
+				options.no_truncate = true
+			} else {
+				options.no_truncate = false
 			}
 		}
 	}
@@ -395,10 +403,10 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
 	thread_count := options.num_ref_threads
 
 	log_message(1, fmt.Sprint("**** Processing table ", table, " ****"))
-	log_message(2, fmt.Sprint("   target table name", target_table))
-	log_message(2, fmt.Sprint("   columns", options.columns[tabindex]))
-	log_message(2, fmt.Sprint("   target_columns", options.target_columns[tabindex]))
-	log_message(2, fmt.Sprint("   keys", options.keys[tabindex]))
+	log_message(2, fmt.Sprint("   target table name ", target_table))
+	log_message(2, fmt.Sprint("   columns ", options.columns[tabindex]))
+	log_message(2, fmt.Sprint("   target_columns ", options.target_columns[tabindex]))
+	log_message(2, fmt.Sprint("   keys ", options.keys[tabindex]))
 	log_message(1, fmt.Sprint("Found "+fmt.Sprint(file_count)+" files for table "+target_table+"."))
 
 	options.full_db_id = "projects/" + options.project + "/instances/" + options.instance + "/databases/" + options.database + ""
@@ -417,7 +425,12 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
 			lineCount_total += lineCount
 		}
 	} else if options.mode == "refr_write_end" {
-		truncateTarget(target_table)
+		if options.no_truncate {
+			log_message(1, "Flag was set for no truncation, "+target_table+" not being truncated")
+		} else {
+			log_message(1, "Truncating "+target_table)
+			truncateTarget(target_table)
+		}
 
 		log_message(1, "Making "+fmt.Sprint(thread_count)+" threads for table "+target_table)
 		var ch = make(chan int, file_count)
