@@ -138,6 +138,7 @@ func parse_args() {
 	}
 	options.mode = os.Args[1]
 	options.soft_delete = false
+	options.no_truncate = false
 	if len(os.Args) > 4 {
 		user_args := strings.Split(os.Args[4], " ")
 		for _, arg := range user_args {
@@ -146,8 +147,6 @@ func parse_args() {
 			}
 			if arg == "-n" {
 				options.no_truncate = true
-			} else {
-				options.no_truncate = false
 			}
 		}
 	}
