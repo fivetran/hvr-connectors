@@ -40,6 +40,7 @@
 //		2024-07-15 CA: 	Added check for string column to prevent conversion of numeric strings
 //						to integers
 //		2024-08-13 CA:  Added -n flag to indicate Spanner tables will not be truncated on refresh
+//		2024-08-20 CA:  Made non-truncating refresh use InsertOrUpdateMap just like integrate
 //
 //===========================================================================
 
@@ -352,7 +353,7 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
 			}
 		}
 
-		if options.mode == "integ_end" && options.soft_delete {
+		if (options.mode == "integ_end" && options.soft_delete) || (options.mode == "refr_write_end" && options.no_truncate) {
 			log_message(3, fmt.Sprintf("Insert row interface %v", insertItf))
 			_, err := client.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 				m2 := spanner.InsertOrUpdateMap(""+tbl_name+"", insertItf)
