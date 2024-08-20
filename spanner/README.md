@@ -46,6 +46,7 @@ The following options may be set in the /UserArguments of the AgentPlugin action
 | Option | Description |
 | ------ | ----------- |
 |   -s   | Use this option for soft deletion. All transaction are integrated as an InsertOrUpdate mutation, which means if a row doesn't exist in the target table then an insert is done, if it does then the existing row is updated. Without this options all transactions are integrated as an insert. |
+|   -n   | This option does two things: 1. stops truncation of Spanner tables during refresh, and 2. changes inserts to upserts (InsertOrUpdate) for refresh |
 
 ## Authentication
 HVR needs authentication to write rows to the target Spanner table.  Set an Environment action with Name=GOOGLE_APPLICATION_CREDENTIALS, Value="path to credentials file"
@@ -66,7 +67,7 @@ The connector associates the files produced by integrate or refresh with the dif
 The connector processes one table at a time. Especially during refresh operations, many files may be generated for a single table. Within a refresh job or an integrate cycle, the script will iterate through all tables in the channel and then through all files for that table. As soon as the data for a file has been integrated and the Spanner client has been closed, the connector will delete the file that has been processed.
 
 ## Refresh Create/Recreate target table
-The script does not support creating or recreating tables on the Spanner target. All rows are truncated during refresh jobs, including any that are marked as deleted or that include timekey history.
+The script does not support creating or recreating tables on the Spanner target. All rows are truncated during refresh jobs (unless option -n is used), including any that are marked as deleted or that include timekey history.
 
 ## DDL changes
 The script does not support capturing DDL changes from the source.
