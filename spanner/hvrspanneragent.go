@@ -41,6 +41,7 @@
 //						to integers
 //		2024-08-13 CA:  Added -n flag to indicate Spanner tables will not be truncated on refresh
 //		2024-08-20 CA:  Made non-truncating refresh use InsertOrUpdateMap just like integrate
+//		2024-08-21 CA:  Refresh and Integrate both use threading
 //
 //===========================================================================
 
@@ -62,22 +63,22 @@ import (
 )
 
 type Options struct {
-	trace_level     int
-	num_ref_threads int
-	mode            string
-	file_loc        string
-	files           []string
-	tables          []string
-	target_tables   []string
-	keys            []string
-	columns         []string
-	target_columns  []string
-	project         string
-	instance        string
-	database        string
-	full_db_id      string
-	soft_delete     bool
-	no_truncate     bool
+	trace_level    int
+	max_threads    int
+	mode           string
+	file_loc       string
+	files          []string
+	tables         []string
+	target_tables  []string
+	keys           []string
+	columns        []string
+	target_columns []string
+	project        string
+	instance       string
+	database       string
+	full_db_id     string
+	soft_delete    bool
+	no_truncate    bool
 }
 
 var options Options
@@ -143,10 +144,13 @@ func parse_args() {
 	if len(os.Args) > 4 {
 		user_args := strings.Split(os.Args[4], " ")
 		for _, arg := range user_args {
+			log_message(1, "your args "+arg)
 			if arg == "-s" {
+				log_message(1, "you got SD")
 				options.soft_delete = true
 			}
 			if arg == "-n" {
+				log_message(1, "you got no trunc")
 				options.no_truncate = true
 			}
 		}
@@ -154,8 +158,9 @@ func parse_args() {
 }
 
 func env_load() {
+	log_message(1, "Loading Environment Variables...")
 	options.trace_level = get_integer_ev("HVR_SPANNER_TRACE", 5)
-	options.num_ref_threads = get_integer_ev("HVR_SPANNER_REFRESH_THREADS", 10)
+	options.max_threads = get_integer_ev("HVR_SPANNER_THREADS", 10)
 	options.file_loc = os.Getenv("HVR_FILE_LOC")
 	options.files = get_list_ev("HVR_FILE_NAMES", ":")
 	options.tables = get_list_ev("HVR_TBL_NAMES", ":")
@@ -179,6 +184,11 @@ func valid_tablename(parsed string) bool {
 
 func build_table_map() map[string][]string {
 	table_map := make(map[string][]string)
+
+	file_count := len(options.files)
+	if file_count > 300 {
+		log_message(1, "Found "+fmt.Sprint(file_count)+" files. ")
+	}
 
 	for _, file := range options.files {
 		if !strings.HasSuffix(file, ".csv") {
@@ -292,7 +302,7 @@ func truncateTarget(tbl_name string) {
 	log_message(1, "All rows deleted from target table "+tbl_name+".")
 }
 
-func integRows(lineCount int, tbl_name string, col_names_slice []string, rows [][]string, file_full_name string, dtypes map[string]string) (rowCount int) {
+func integRows(lineCount int, tbl_name string, col_names_slice []string, rows [][]string, file_full_name string, dtypes map[string]string, threadnum int) (rowCount int) {
 
 	var colMap = make(map[string]string)
 
@@ -300,9 +310,9 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
 
 	client, err := spanner.NewClient(ctx, options.full_db_id)
 	if err != nil {
-		log.Fatal("An error occured while creating Spanner client", "Error:", err)
+		log.Fatal("Thread "+fmt.Sprint(threadnum)+": An error occured while creating Spanner client", "Error:", err)
 	}
-	log_message(2, "Spanner client created successfully.")
+	log_message(2, "Thread "+fmt.Sprint(threadnum)+": Spanner client created successfully.")
 
 	if options.mode == "integ_end" {
 		if options.soft_delete {
@@ -317,7 +327,7 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
 	}
 	rowCount = 0
 
-	log_message(2, fmt.Sprint("Integrate ", lineCount, " rows from ", file_full_name, "  starting"))
+	log_message(2, fmt.Sprint("Thread "+fmt.Sprint(threadnum)+": Integrate ", lineCount, " rows from ", file_full_name, "  starting"))
 	for i := 0; i < len(rows); i++ {
 		var insertMap = make(map[string]string)
 		recordCount := 0
@@ -330,8 +340,8 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
 				}
 			}
 		}
-		log_message(3, fmt.Sprint("*** Integrate InsertMap:", insertMap))
-		log_message(3, fmt.Sprint("dtypes: ", dtypes))
+		log_message(3, fmt.Sprint("Thread "+fmt.Sprint(threadnum)+":  Integrate InsertMap:", insertMap))
+		log_message(3, fmt.Sprint("Thread "+fmt.Sprint(threadnum)+": dtypes: ", dtypes))
 		insertItf := make(map[string]interface{}, len(insertMap))
 		for k, v := range insertMap {
 			if dtypes[strings.ToLower(k)] == "FLOAT64" {
@@ -354,7 +364,7 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
 		}
 
 		if (options.mode == "integ_end" && options.soft_delete) || (options.mode == "refr_write_end" && options.no_truncate) {
-			log_message(3, fmt.Sprintf("Insert row interface %v", insertItf))
+			log_message(3, fmt.Sprintf("Thread "+fmt.Sprint(threadnum)+": Insert row interface %v", insertItf))
 			_, err := client.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
 				m2 := spanner.InsertOrUpdateMap(""+tbl_name+"", insertItf)
 
@@ -362,7 +372,7 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
 			})
 			if err != nil {
 				client.Close()
-				fail_out(fmt.Sprintf("InsertOrUpdate failed: %v", err))
+				fail_out(fmt.Sprintf("Thread "+fmt.Sprint(threadnum)+": InsertOrUpdate failed: %v", err))
 			}
 		} else {
 			_, err := client.ReadWriteTransaction(ctx, func(ctx context.Context, txn *spanner.ReadWriteTransaction) error {
@@ -372,15 +382,15 @@ func integRows(lineCount int, tbl_name string, col_names_slice []string, rows []
 			})
 			if err != nil {
 				client.Close()
-				fail_out(fmt.Sprintf("Insert failed: %v", err))
+				fail_out(fmt.Sprintf("Thread "+fmt.Sprint(threadnum)+": Insert failed: %v", err))
 			}
 		}
 	}
 
 	client.Close()
 	file_loc_cleanup(file_full_name)
-	log_message(2, "Spanner client closed for "+file_full_name)
-	log_message(2, fmt.Sprint("Integrate ", lineCount, " rows from ", file_full_name, "  finished"))
+	log_message(2, "Thread "+fmt.Sprint(threadnum)+": Spanner client closed for "+file_full_name)
+	log_message(2, fmt.Sprint("Thread "+fmt.Sprint(threadnum)+": Integrate ", lineCount, " rows from ", file_full_name, "  finished"))
 
 	return rowCount
 }
@@ -400,7 +410,8 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
 	table_file_list := table_map[table]
 	file_count := len(table_file_list)
 	target_table := options.target_tables[tabindex]
-	thread_count := options.num_ref_threads
+	max_threads := options.max_threads
+	actual_threads := min(max_threads, file_count)
 
 	log_message(1, fmt.Sprint("**** Processing table ", table, " ****"))
 	log_message(2, fmt.Sprint("   target table name ", target_table))
@@ -415,61 +426,52 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
 
 	integ_rows_total = 0
 
-	if options.mode == "integ_end" {
-		for _, filename := range table_map[table] {
-			integ_rows, lineCount := process_file(filename, target_table, datatypes_map) // process the file
-			// log the processing with human-friendly thread and file numbers
-			log_message(1, "processed file "+filename+" for "+target_table+" table")
-
-			integ_rows_total += integ_rows
-			lineCount_total += lineCount
-		}
-	} else if options.mode == "refr_write_end" {
+	// Determine whether truncation is needed and execute
+	if options.mode == "refr_write_end" {
 		if options.no_truncate {
 			log_message(1, "Flag was set for no truncation, "+target_table+" not being truncated")
 		} else {
 			log_message(1, "Truncating "+target_table)
 			truncateTarget(target_table)
 		}
-
-		log_message(1, "Making "+fmt.Sprint(thread_count)+" threads for table "+target_table)
-		var ch = make(chan int, file_count)
-		var wg sync.WaitGroup
-		wg.Add(thread_count)
-
-		for i := 0; i < thread_count; i++ {
-			i := i
-			go func() {
-				for {
-					a, ok := <-ch
-					if !ok { // if there is nothing to do and the channel has been closed then end the goroutine
-						wg.Done()
-						return
-					}
-					var integ_rows int
-					filename := table_file_list[a]
-					integ_rows, lineCount := process_file(filename, target_table, datatypes_map) // process the file
-					// log the processing with human-friendly thread and file numbers
-					log_message(1, "thread "+fmt.Sprint(i+1)+" processed file "+fmt.Sprint(a+1)+", "+filename+" for "+target_table+" table")
-
-					integ_rows_total += integ_rows
-					lineCount_total += lineCount
-				}
-
-			}()
-		}
-
-		// make a queue for the files
-		for i := 0; i < file_count; i++ {
-			ch <- i // add i to the queue
-		}
-
-		close(ch) // This tells the goroutines there's nothing else to do
-		wg.Wait()
-
-		log_message(1, "Finished "+fmt.Sprint(thread_count)+" threads for table "+target_table)
 	}
 
+	log_message(1, "Making "+fmt.Sprint(actual_threads)+" threads for table "+target_table)
+	var ch = make(chan int, file_count)
+	var wg sync.WaitGroup
+	wg.Add(actual_threads)
+
+	for i := 0; i < actual_threads; i++ {
+		i := i
+		go func() {
+			for {
+				a, ok := <-ch
+				if !ok { // if there is nothing to do and the channel has been closed then end the goroutine
+					wg.Done()
+					return
+				}
+				var integ_rows int
+				filename := table_file_list[a]
+				integ_rows, lineCount := process_file(filename, target_table, datatypes_map, i) // process the file
+				// log the processing with human-friendly thread and file numbers
+				log_message(1, "Thread "+fmt.Sprint(i)+": processed file "+fmt.Sprint(a+1)+", "+filename+" for "+target_table+" table")
+
+				integ_rows_total += integ_rows
+				lineCount_total += lineCount
+			}
+
+		}()
+	}
+
+	// make a queue for the files
+	for i := 0; i < file_count; i++ {
+		ch <- i // add i to the queue
+	}
+
+	close(ch) // This tells the goroutines there's nothing else to do
+	wg.Wait()
+
+	log_message(1, "Finished "+fmt.Sprint(actual_threads)+" threads, "+fmt.Sprint(file_count)+" files for table "+target_table)
 	if options.mode == "refr_write_end" {
 		log.Println("Refreshed " + strconv.Itoa(integ_rows_total) + " rows to target table " + target_table + ".")
 	} else {
@@ -477,23 +479,23 @@ func process_table(table string, tabindex int, table_map map[string][]string) {
 	}
 }
 
-func process_file(fname string, tbl string, dtypes map[string]string) (int, int) {
+func process_file(fname string, tbl string, dtypes map[string]string, threadnum int) (int, int) {
 	var int_rows int
 	var lineCount int
 
 	file_full_name := options.file_loc + "/" + fname
-	log_message(2, "Staging file full name "+file_full_name)
+	log_message(2, "Thread "+fmt.Sprint(threadnum)+": Staging file full name "+file_full_name)
 	if _, err := os.Stat(file_full_name); err == nil {
 		headerLine, _, err := readHeader(file_full_name)
-		log_message(2, "Staging file header "+headerLine)
+		log_message(2, "Thread "+fmt.Sprint(threadnum)+": Staging file header "+headerLine)
 		if err != nil {
-			fail_out(fmt.Sprintf("Error reading header: %v", err))
+			fail_out(fmt.Sprintf("Thread "+fmt.Sprint(threadnum)+": Error reading header: %v", err))
 		}
 		col_names_slice := strings.Split(headerLine, ",")
-		log_message(2, fmt.Sprintf("Table columns based on header %s", col_names_slice))
+		log_message(2, fmt.Sprintf("Thread "+fmt.Sprint(threadnum)+": Table columns based on header %s", col_names_slice))
 		rows, lineCount := loadCsv(file_full_name, len(col_names_slice))
-		log_message(2, "Staging file loaded successfully.")
-		int_rows = integRows(lineCount, tbl, col_names_slice, rows, file_full_name, dtypes)
+		log_message(2, "Thread "+fmt.Sprint(threadnum)+": Staging file loaded successfully.")
+		int_rows = integRows(lineCount, tbl, col_names_slice, rows, file_full_name, dtypes, threadnum)
 
 	}
 
