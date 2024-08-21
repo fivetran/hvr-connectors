@@ -36,7 +36,7 @@ the connector. They should be supplied by channel Environment actions.
 | HVR_SPANNER_PROJECTID       |    Yes    | The Google cloud project id   |
 | HVR_SPANNER_INSTANCEID      |    Yes    | The Google cloud instance id |
 | HVR_SPANNER_DATABASE        |    Yes    | The Google Spanner database name |
-| HVR_SPANNER_REFRESH_THREADS |     No    | The number of Go threads to be used for processing files during refresh, defaults to 10 if not specified |
+| HVR_SPANNER_THREADS |     No    | The number of Go threads to be used for processing files during refresh, defaults to 10 if not specified |
 | HVR_SPANNER_TRACE           |     No    | Enables tracing of the hvrspanneragent. Tracing Levels: 0 - No tracing, 1 - Minimal logging, 2 - File-level logging, 3 - Row-level logging |
 
 
